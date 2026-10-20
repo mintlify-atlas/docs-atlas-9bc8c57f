@@ -1,14 +1,14 @@
 ---
 title: "Schedule Agents with Cron, One-Off, and Event Triggers"
 sidebarTitle: "Schedules"
-description: "Create recurring cron schedules, one-off timed runs, event triggers, and webhook triggers for deployed Sapiom agents — with timezone support and MCP equivalents."
+description: "Attach cron, one-off, event, and webhook triggers to deployed Sapiom agents using the CLI schedule commands and their sapiom-dev MCP equivalents."
 ---
 
 The Sapiom CLI's `agents schedule` sub-commands let you attach time-based and event-based triggers to any deployed agent. A **cron schedule** fires the agent on a repeating pattern; a **one-off** fires it exactly once at a future UTC instant; an **event trigger** fires it whenever a matching event type is emitted; and a **webhook trigger** fires it via an inbound HTTP POST. All four kinds are managed through the same `schedule` surface and are visible via `schedule list` and `schedule inspect`.
 
 ## Prerequisites
 
-The agent must be deployed before you can attach a schedule to it. See the [Deploy guide](/guides/deploy) to build and ship your agent first. Scheduling commands require authentication — run `sapiom agents deploy` (or `sapiom_authenticate` in the MCP) if you haven't already.
+The agent must be deployed before you can attach a schedule to it. See the [Deploy guide](/guides/deploy) to build and ship your agent first. Scheduling commands require authentication — run `sapiom login` (or `sapiom_authenticate` in the MCP) if you haven't already.
 
 ---
 
@@ -37,6 +37,9 @@ sapiom agents schedule create my-app --cron "0 9 * * 1-5" --timezone America/New
 - `my-app` is the agent name from your `sapiom.json`.
 - `--cron` accepts standard five-field cron syntax (`minute hour day-of-month month day-of-week`).
 - `--timezone` accepts any IANA timezone name (e.g. `Europe/London`, `Asia/Tokyo`). Omit it for UTC.
+- `--input <json>` passes a JSON payload delivered as execution input on each fire.
+- `--start-at <iso>` sets the earliest occurrence date (ISO 8601); fires before this instant are skipped.
+- `--end-at <iso>` sets the latest occurrence date; no fires happen after this instant.
 
 ### One-off scheduled run
 
@@ -44,28 +47,27 @@ Create a schedule that fires the agent exactly once at a specific UTC datetime:
 
 ```bash
 sapiom agents schedule create my-app --at 2026-07-01T17:00:00Z
+sapiom agents schedule create my-app --at 2026-07-01T17:00:00Z --input '{"report":"q2"}'
 ```
 
 `--at` accepts an ISO 8601 datetime. After the single fire, the trigger record remains visible in `schedule list` with a completed status, so you can audit when and whether it fired.
 
 ### Event trigger
 
-Start a run each time a matching custom event type is emitted to your tenant. The equivalent MCP tool is `sapiom_dev_agents_schedule`:
+Start a run each time a matching custom event type is emitted to your tenant. Event triggers are created via the `sapiom_dev_agents_schedule` MCP tool (no CLI equivalent):
 
-```bash
-# Via MCP — event trigger type
-sapiom_dev_agents_schedule  # with { type: "eventType", eventType: "lead.created" }
+```text
+sapiom_dev_agents_schedule  →  { type: "eventType", eventType: "lead.created" }
 ```
 
 An event trigger with no matching in-flight emits is a success: the event is recorded and no run starts (`outcome: "unmatched"`). When an emit does match, it fans out to every active event trigger subscribed to that type — potentially starting multiple runs.
 
 ### Webhook trigger
 
-A webhook trigger fires the agent when an inbound HTTP POST arrives at a generated URL under your App Link:
+A webhook trigger fires the agent when an inbound HTTP POST arrives at a generated URL under your App Link. Webhook triggers are created via the `sapiom_dev_agents_schedule` MCP tool (no CLI equivalent):
 
-```bash
-# Via MCP
-sapiom_dev_agents_schedule  # with { type: "webhook", ... }
+```text
+sapiom_dev_agents_schedule  →  { type: "webhook", ... }
 ```
 
 After creation, third parties POST to `https://apps.sapiom.ai/{org}/{slug}/hook/<path>`. The `/hook` prefix is stripped and the body is forwarded byte-exact, so Slack, Stripe, and GitHub signature checks run inside your agent code unchanged. Use `sapiom_dev_agents_schedule_secret` to rotate, complete-rotate, or revoke the signing secret for a webhook trigger without cancelling the trigger itself.
@@ -80,7 +82,7 @@ After creation, third parties POST to `https://apps.sapiom.ai/{org}/{slug}/hook/
 sapiom agents schedule list my-app
 ```
 
-Returns all active triggers attached to `my-app`: their IDs, types (cron / one-off / event / webhook), status, and for cron triggers the next scheduled fire time.
+Returns all active triggers attached to `my-app`: their IDs, types (cron / one-off / event / webhook), status, and for cron triggers the next scheduled fire time. Filter by status with `--status active|paused|completed|disabled`.
 
 ### Inspect a specific schedule
 

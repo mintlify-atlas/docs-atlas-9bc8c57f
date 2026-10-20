@@ -1,7 +1,7 @@
 ---
 title: "Step Graph Structure: Transitions, Entries, and Terminals"
 sidebarTitle: "Step Graph"
-description: "Sapiom agents are modeled as typed directed graphs where every edge is a compile-checked transition — learn how entries, terminals, and inputSchema compose."
+description: "Sapiom agents are typed directed graphs where every edge is a compile-checked transition — learn how entries, terminals, and inputSchema compose."
 ---
 
 Every Sapiom agent is a **step graph**: a finite directed graph where nodes are steps and edges are the transitions those steps may take. The graph is not inferred at runtime — it is declared in the step definitions themselves through `next`, `terminal`, `canFail`, and `pause` fields. TypeScript derives the `run` return type from those declarations, the build phase reads them to produce a manifest, and `validateGraph` checks the result for structural correctness before anything is deployed.
@@ -10,7 +10,7 @@ Every Sapiom agent is a **step graph**: a finite directed graph where nodes are 
 
 A two-step agent with one directed edge looks like this in code and concept:
 
-```
+```text
          inputSchema (public API)
               │
           ┌───▼───┐      goto("finish", …)      ┌──────────┐
@@ -101,7 +101,7 @@ const validate = defineStep({
   canFail: true,
   async run(input, ctx) {
     if (!input.data) {
-      return fail({ code: "MISSING_DATA", message: "No data provided" });
+      return fail("MISSING_DATA", { output: { message: "No data provided" } });
     }
     return goto("process", { data: input.data });
   },
@@ -207,6 +207,9 @@ Both the static `pause` declaration and the runtime `pauseUntilSignal` call must
 | `canFail` | `boolean` | — | Enables `fail(…)` |
 | `pause` | `{ signal, resumeStep }` | — | Enables `pauseUntilSignal(…)` |
 | `inputSchema` | `ZodSchema` | — | Types + validates inbound payload |
+| `timeoutMs` | `number` | — | Per-step execution timeout in milliseconds |
+| `description` | `string` | — | Human-authored one-liner for the canvas step inspector |
+| `capabilities` | `string[]` | — | Capability identifiers this step declares it calls |
 | `run` | `async (input, ctx) => Allowed` | ✅ | Step implementation |
 
 ## Next steps

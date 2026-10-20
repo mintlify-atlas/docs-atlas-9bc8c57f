@@ -96,16 +96,16 @@ Credentials are stored at `~/.sapiom/credentials.json`, keyed by environment nam
 
 The following tools make network calls to Sapiom cloud and require a valid API key:
 
-- `sapiom_dev_agents_link`, `deploy`, `run`, `inspect`, `signal`, `emit_event`
-- All `schedule_*` tools
-- All `sandbox_preview`, `app_*` tools
+- `sapiom_dev_agents_link`, `sapiom_dev_agents_deploy`, `sapiom_dev_agents_run`, `sapiom_dev_agents_inspect`, `sapiom_dev_agents_signal`, `sapiom_dev_agents_emit_event`
+- `sapiom_dev_agents_schedule`, `sapiom_dev_agents_schedule_inspect`, `sapiom_dev_agents_schedule_cancel`, `sapiom_dev_agents_schedule_secret`, `sapiom_dev_agents_cron_preview`
+- `sapiom_dev_sandbox_preview`, `sapiom_dev_app_publish`, `sapiom_dev_app_list`, `sapiom_dev_app_settings`, `sapiom_dev_app_delete`
 - `sapiom_send_feedback`
 
 The local tools `sapiom_dev_agents_scaffold`, `sapiom_dev_agents_check`, and `sapiom_dev_agents_run_local` need no authentication. `scaffold` may query npm for current dependency versions; `check` imports the definition locally; and `run_local` executes your step code with `ctx.sapiom.*` calls replaced by stubs, so direct network, filesystem, environment, and process effects in your code remain real.
 
 ## Usage analytics
 
-`@sapiom/mcp` emits anonymous usage telemetry (one `tool.call` event per invocation: tool name, arguments shape, duration, and ok/error class) to the hosted Sapiom collector. Opt out at any time:
+`@sapiom/mcp` emits anonymous usage telemetry (one `tool.call` event per invocation: tool name, arguments, duration, and ok/error class) to the hosted Sapiom collector. Opt out at any time:
 
 ```bash
 # In your MCP host env config:

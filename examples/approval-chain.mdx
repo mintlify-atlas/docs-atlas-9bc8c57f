@@ -35,35 +35,39 @@ The `approval-chain` example implements a production-grade human-in-the-loop app
 ## Step graph
 
 ```text
-start → present ─(pause: approval.decision, $0 while idle)─▶ decide
-          ▲                                                    │
-          │ approve & more gates                              │
-          └────────────────────────────────────────────────── ┤
-        remind ─(pause: approval.decision)────────────────────┤ reminder tick (budget left)
-          ▲                                                     │
-          └───────────────────────── reminder tick ─────────────┤
-                                                                 │
-     reject │              approve & last gate │        timeout / no-response │
-            ▼                                  ▼                              ▼
-       compensate                          finalize                       escalate
-       (terminal)                          (terminal)                      (terminal)
+       ┌─ no approvers ──────────────────────────────────────────────────────┐
+       │                                                                      ▼
+start ─┤                                                                  escalate
+       │                                                                 (terminal)
+       └─▶ present ─(pause: approval.decision, $0 while idle)─▶ decide
+              ▲                                                    │
+              │ approve & more gates                               │
+              └────────────────────────────────────────────────── ┤
+            remind ─(pause: approval.decision)────────────────────┤ reminder tick (budget left)
+              ▲                                                     │
+              └──────────────────── reminder tick ─────────────────┤
+                                                                    │
+       reject │              approve & last gate │       timeout / no-response │
+              ▼                                  ▼                              ▼
+         compensate                          finalize                       escalate
+         (terminal)                          (terminal)                     (terminal)
 ```
 
 | Step | Kind | Role |
 |---|---|---|
-| `start` | compute | Parse input, initialise chain state in `ctx.shared` |
-| `present` | pause | Email the current approver, then `pauseUntilSignal` |
+| `start` | compute | Parse input, validate approvers, initialise all chain state in `ctx.shared`, then route to `present` or `escalate` (no approvers) |
+| `present` | pause | Email the current approver, then `pauseUntilSignal` — the run suspends here at $0 until the approver fires `approval.decision` |
 | `decide` | compute | Route the resume payload to the next gate, reminder, finalize, compensate, or escalate |
-| `remind` | pause | Email a reminder, then re-pause on the same gate |
+| `remind` | pause | Email a reminder nudge, then re-pause on the same gate |
 | `finalize` | compute (terminal) | The single irreversible action, reached only when every party approved |
 | `compensate` | compute (terminal) | Saga rollback — notify prior approvers the chain was cancelled |
-| `escalate` | compute (terminal) | Alert the escalation channel when a gate goes silent |
+| `escalate` | compute (terminal) | Alert the escalation channel when a gate goes silent or no approvers were supplied |
 
 ## Core patterns
 
 ### pauseUntilSignal — durable suspension at $0
 
-The heart of the approval chain is `pauseUntilSignal`. When `present` runs, it emails the current approver and then immediately suspends:
+The heart of the approval chain is `pauseUntilSignal`. When `present` runs, it emails the current approver and then immediately suspends. The step carries a static `pause` declaration so the engine knows the signal and resume target at graph-check time, and the `run` body returns `pauseUntilSignal(...)` to trigger the suspension:
 
 ```typescript
 import { pauseUntilSignal } from "@sapiom/agent";
@@ -73,10 +77,12 @@ const APPROVAL_SIGNAL = "approval.decision";
 const present = defineStep({
   name: "present",
   next: [],
+  // Static graph edge: on the approval signal, resume at `decide`.
   pause: { signal: APPROVAL_SIGNAL, resumeStep: "decide" },
   async run(_input, ctx) {
     // ... email the current approver ...
 
+    // Suspend at $0 until this party fires the approval signal for this run.
     return pauseUntilSignal({
       signal: APPROVAL_SIGNAL,
       resumeStep: "decide",

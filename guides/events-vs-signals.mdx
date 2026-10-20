@@ -1,7 +1,7 @@
 ---
 title: "Events vs Signals: Starting and Resuming Agent Runs"
 sidebarTitle: "Events vs Signals"
-description: "Events start new agent runs by matching active triggers; signals resume paused runs by matching a (name, correlationId) pair — the two namespaces never cross."
+description: "Events start new agent runs by matching active triggers; signals resume paused runs by (name, correlationId) pair — the two namespaces never cross."
 ---
 
 Sapiom has two distinct mechanisms for driving agent runs from the outside world, and they operate in completely separate namespaces: **events** start new runs, and **signals** resume paused ones. An event never wakes a paused run. A signal never starts a new run. Confusing the two is a common source of bugs — this page covers the full contract for both verbs, their grammar rules, and how to use them from every available surface.
@@ -21,7 +21,7 @@ Sapiom has two distinct mechanisms for driving agent runs from the outside world
 
 An event `type` is machine-routed, so its grammar is strictly enforced: lowercase `[a-z0-9_]` segments joined by dots. Examples:
 
-```
+```text
 lead.created
 payment.invoice.paid
 repo.pull_request.merged
@@ -185,7 +185,7 @@ sapiom agents signal approval.decision \
 
 The MCP tools follow the same contract — the tool names map directly to the verb:
 
-```
+```text
 sapiom_dev_agents_emit_event   →  emitEvent
 sapiom_dev_agents_signal       →  signal
 ```

@@ -1,7 +1,7 @@
 ---
 title: "Sandboxes: Isolated Ephemeral Compute for Agent Steps"
 sidebarTitle: "Sandboxes"
-description: "Create isolated compute environments, write and transfer files, stream command output, and tear down sandboxes when agent work is done — billed per second until destroyed."
+description: "Create isolated compute environments, exec commands, stream live output, and transfer files — billed until destroyed or the ttl elapses."
 ---
 
 Sandboxes are isolated, ephemeral compute environments you can create on demand, use across agent steps, and tear down when finished. You write files, run commands, stream output, and transfer large binaries — all through the `sandboxes` namespace in `@sapiom/tools`. The `/workspace` directory is the conventional working directory that other capabilities (repositories, coding models) rely on, so keep your files there for seamless composition.
@@ -167,6 +167,7 @@ const box = await sandboxes.create({
 | `box.uploadDir(destPath, srcPath)` | Upload an entire directory |
 | `box.readFile(path)` | Read a file's contents |
 | `box.createPublicUrl({ port })` | Expose a port as a public HTTPS URL |
+| `box.deployPreview(opts)` | Build, start, and expose an app at a stable public URL |
 | `box.destroy()` | Stop billing and delete the sandbox |
 
 </Accordion>

@@ -1,5 +1,5 @@
 ---
-title: "Get Started with the Sapiom SDK in Minutes"
+title: "Sapiom Quickstart: Deploy Your First Agent in Minutes"
 sidebarTitle: "Quickstart"
 description: "Scaffold, author, and deploy your first Sapiom agent using the CLI, Agent Studio, or direct authoring — with a working hello-agent example included."
 ---
@@ -82,9 +82,19 @@ import { defineAgent, defineStep, terminate } from "@sapiom/agent";
 import { z } from "zod/v4";
 
 /**
- * The entry contract — this agent's public API. The dashboard Run form renders
- * its labelled fields from this schema. `.default()` on each field means a
- * zero-input run still validates.
+ * Hello Agent — the minimal single-step Sapiom agent.
+ *
+ * The smallest valid definition: one terminal step, no capabilities. Use it to
+ * confirm your MCP install and the build → deploy → run path work end to end
+ * before reaching for a metered capability.
+ *
+ * Each step declares its allowed transitions (`next` / `terminal`); the return
+ * type is derived from them, so an undeclared transition is a compile error.
+ */
+/**
+ * The entry contract — this agent's public API, and what the dashboard "Run
+ * once" form renders its labelled fields from. `name` defaults to the greeting
+ * this scaffold ships with, so a zero-input run still produces a real result.
  */
 const entryInput = z.object({
   name: z.string().default("world").describe("Who to greet."),

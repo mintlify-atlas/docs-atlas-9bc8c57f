@@ -1,7 +1,7 @@
 ---
 title: "defineStep: Define a Typed Step in a Sapiom Agent"
 sidebarTitle: "defineStep"
-description: "Factory that derives a step's run() return type from its declared transitions, stores routing declarations for buildManifest, and produces a typed StepDefinition."
+description: "Step factory that enforces declared transitions at compile time and stores routing declarations as runtime properties for buildManifest to consume."
 ---
 
 `defineStep` is the authoring surface for individual steps in a Sapiom agent. It accepts a definition object — a name, declared outgoing transitions, an optional input schema, and an async `run` function — and returns a `StepDefinition`. The key design property is that the `run` return type is derived directly from the declared transitions: if you try to `goto` a step that isn't in `next`, call `terminate()` without declaring `terminal: true`, or `fail()` without `canFail: true`, TypeScript surfaces a compile error at the `run` return site rather than a runtime crash.
@@ -184,7 +184,7 @@ Completed step execution records for this run, oldest first. Each `StepExecution
 ## Complete Example
 
 ```typescript
-import { defineStep, goto, terminate, fail, retry } from "@sapiom/agent";
+import { defineStep, goto, terminate, fail, retry, type AgentExecutionContext } from "@sapiom/agent";
 import { z } from "zod/v4";
 
 interface PipelineShared {

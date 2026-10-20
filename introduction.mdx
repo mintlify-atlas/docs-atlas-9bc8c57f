@@ -1,7 +1,7 @@
 ---
 title: "Sapiom SDK: TypeScript SDK for AI Agent Orchestration"
 sidebarTitle: "Introduction"
-description: "Sapiom is a TypeScript/Node.js SDK for building, running, and operating AI agents — author typed step graphs, call capabilities, and ship from CLI or Studio."
+description: "Sapiom is a TypeScript SDK for building and operating AI agents — author typed step graphs, call capabilities, and ship from the CLI or Agent Studio."
 ---
 
 Sapiom is a TypeScript SDK for building, running, and operating AI agents on the Sapiom platform. You author agents as typed step graphs, call Sapiom capabilities — sandboxes, git repositories, coding models, search, file storage, and more — directly from your code, and deploy them to the Sapiom engine using the CLI, Agent Studio, or your coding agent's MCP server. The SDK is a focused monorepo: install only the packages your project needs.
@@ -18,7 +18,7 @@ With the Sapiom SDK you can author agents that orchestrate multi-step AI workflo
 
 The SDK is organized into focused packages that build on each other. The diagram below shows how they relate:
 
-```
+```text
 @sapiom/agent            Authoring contract (defineAgent, directives, types)
     ↑
     ├── @sapiom/agent-runtime   Host-agnostic graph-walker runtime

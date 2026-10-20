@@ -1,7 +1,7 @@
 ---
-title: "Agent Directives: goto, terminate, fail, retry, pauseUntilSignal"
+title: "Agent Step Directives: Routing and Control Flow"
 sidebarTitle: "Directives"
-description: "The five directive constructors a step's run() may return, their branded types, the wire interface hierarchy, and the guard functions the engine uses to inspect them."
+description: "The five step directives — goto, terminate, fail, retry, pauseUntilSignal — with branded types, guard functions, and the DIRECTIVE_KIND constant."
 ---
 
 Directives are the load-bearing protocol of the Sapiom agent primitive. When a step's `run()` function returns, it returns exactly one directive — a plain object with a `kind` field and type-specific fields — that tells the runner what to do next. The five directives cover every routing outcome: advance to another step, finalize successfully, finalize with a deterministic failure, retry this step, or pause until an external signal arrives. This page documents each constructor, its parameters, the branded type it returns, and the guard function the engine uses to inspect it.

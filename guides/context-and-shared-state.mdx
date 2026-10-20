@@ -1,7 +1,7 @@
 ---
 title: "Agent Execution Context and ctx.shared State Store"
 sidebarTitle: "Context & State"
-description: "AgentExecutionContext gives every step access to ctx.shared for cross-step state, ctx.logger for structured logs, and a hard 256 KiB quota enforced at write time."
+description: "AgentExecutionContext gives every step ctx.shared for cross-step state, ctx.logger for structured logs, and a hard 256 KiB quota enforced at write time."
 ---
 
 Every step's `run` function receives an `AgentExecutionContext` as its second argument — conventionally `ctx`. This context object is the controlled interface between your step code and the Sapiom runtime: it provides `ctx.shared` for passing typed state across step boundaries, `ctx.logger` for structured log emission, `ctx.executionId` to identify the current run, and `ctx.sapiom` for platform capabilities. Understanding `ctx.shared`'s quota and serialisation contract is essential for writing agents that stay within platform limits.
@@ -18,10 +18,17 @@ The properties your step code uses most:
 
 | Property | Type | Purpose |
 |---|---|---|
+| `ctx.executionId` | `string` | Unique, stable ID for the current agent run |
+| `ctx.agentName` | `string` | Name (slug) of the agent this execution belongs to |
 | `ctx.shared` | `TypedContextStore` | Cross-step key/value state store |
 | `ctx.logger` | `StepLogger` | Structured log emission |
-| `ctx.executionId` | `string` | Unique ID for the current agent run |
-| `ctx.sapiom` | `SapiomCapabilities` | Platform capability clients |
+| `ctx.sapiom` | `Sapiom` | Pre-authenticated platform capability clients |
+| `ctx.input` | `unknown` | The value passed to the agent's entry step; unchanged across the run |
+| `ctx.history` | `StepExecutionRecord[]` | Completed step executions in this run, oldest first |
+| `ctx.attempts` | `number` | Zero-based retry counter for the current step |
+| `ctx.organizationId` | `string \| null` | Tenant organization scope (null for cross-tenant runs) |
+| `ctx.tenantId` | `string \| null` | Tenant scope (null for cross-tenant runs) |
+| `ctx.isLocalTrace` | `boolean \| undefined` | `true` under `run_local`; absent on deployed runs |
 
 ## `ctx.shared` — cross-step state
 
@@ -109,10 +116,11 @@ import {
   isCtxSharedSizeLimitExceededPayload,
 } from "@sapiom/agent";
 
-// CTX_SHARED_QUOTA_CONTRACT === "CTX_SHARED_SIZE_LIMIT_EXCEEDED"
+// CTX_SHARED_QUOTA_CONTRACT.errorCode === "CTX_SHARED_SIZE_LIMIT_EXCEEDED"
+// CTX_SHARED_QUOTA_CONTRACT.limitBytes === 262144
 ```
 
-The error payload type `CtxSharedSizeLimitExceededPayload` carries `code`, `phase`, `candidateBytes`, and `limitBytes`.
+The error payload type `CtxSharedSizeLimitExceededPayload` carries `code`, `phase`, `actualBytes`, and `limitBytes`.
 
 </Accordion>
 
@@ -126,7 +134,7 @@ import {
   isCtxSharedSerializationErrorPayload,
 } from "@sapiom/agent";
 
-// CTX_SHARED_SERIALIZATION_ERROR_CONTRACT === "CTX_SHARED_SERIALIZATION_FAILED"
+// CTX_SHARED_SERIALIZATION_ERROR_CONTRACT.errorCode === "CTX_SHARED_SERIALIZATION_FAILED"
 ```
 
 </Accordion>
@@ -180,7 +188,7 @@ const store = defineStep({
 
 ## `ctx.logger` — structured log emission
 
-`ctx.logger` emits structured log events attached to the current step's execution record. The three standard levels are `info`, `warn`, and `error`:
+`ctx.logger` emits structured log events attached to the current step's execution record. The four standard levels are `info`, `warn`, `error`, and `debug`:
 
 ```typescript
 const step = defineStep({
@@ -190,6 +198,7 @@ const step = defineStep({
     ctx.logger.info("starting process", { jobId: input.jobId, attempt: 1 });
 
     try {
+      ctx.logger.debug("calling doWork", { jobId: input.jobId });
       const result = await doWork(input);
       ctx.logger.info("process complete", { result: result.summary });
       return goto("finish", { result });

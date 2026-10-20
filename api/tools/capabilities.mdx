@@ -566,3 +566,147 @@ Ask every independent question over the same `state` in one call — they are ev
 <Warning>
   System One decisions are not a security boundary and are weak at arithmetic and date math. Keep those in code. `decisions.evaluate` judges; it does not compute.
 </Warning>
+
+---
+
+## speech
+
+Text-to-speech, sound effects, and voice listing. `speech` converts text to audio, generates sound effects, and lists the voices available on the platform.
+
+<Tabs>
+  <Tab title="Text-to-speech">
+    ```typescript
+    import { speech } from "@sapiom/tools";
+
+    const result = await speech.textToSpeech.create({
+      text: "Hello, world!",
+    });
+    result.url;       // hosted audio URL (~1 hour lifetime)
+    result.expiresAt; // ISO-8601 expiry
+    ```
+
+    Optionally persist the audio to `fileStorage` and get a durable `fileId`:
+
+    ```typescript
+    const result = await speech.textToSpeech.create({
+      text: "Hello, world!",
+      storage: { visibility: "private" }, // or "public"
+    });
+    if (result.fileId) {
+      const { downloadUrl } = await fileStorage.getDownloadUrl(result.fileId);
+    }
+    result.storageError; // present if storage failed; temporary audio may still be available
+    ```
+  </Tab>
+  <Tab title="Sound effects">
+    ```typescript
+    import { speech } from "@sapiom/tools";
+
+    const sfx = await speech.soundEffects.create({
+      text: "thunder clap",
+      durationSeconds: 3, // optional; omit for automatic duration
+    });
+    sfx.url;
+    ```
+  </Tab>
+  <Tab title="Voice listing">
+    ```typescript
+    import { speech } from "@sapiom/tools";
+
+    const { voices } = await speech.voices.list();
+    const myVoice = voices.find((v) => v.name === "Sarah - Mature, Reassuring, Confident");
+    if (myVoice) {
+      await speech.textToSpeech.create({ text: "Hello!", voice: myVoice.voiceId });
+    }
+    ```
+
+    `voices.list()` returns every available voice. Pass a voice's `voiceId` to `textToSpeech.create` as `voice`. Voice names are not resolved; IDs are forwarded unchanged.
+  </Tab>
+</Tabs>
+
+Key options on `speech.textToSpeech.create`: `text` (required), `voice` (voiceId), `model` (provider model ID, e.g. `"eleven_flash_v2_5"`), `storage`, `idempotencyKey`, and `params` (advanced provider options). `model` takes precedence over `params.model_id`.
+
+HTTP failures throw `SpeechHttpError` (exported from `@sapiom/tools`), carrying `status` and `body`.
+
+---
+
+## browserAutomation
+
+Programmatic browser sessions, one-shot screenshots, and identity management. Connect Playwright or Puppeteer to a managed browser via CDP, or take a quick screenshot without a session.
+
+<Tabs>
+  <Tab title="One-shot screenshot">
+    ```typescript
+    import { browserAutomation } from "@sapiom/tools";
+
+    const shot = await browserAutomation.screenshot({ url: "https://example.com" });
+    shot.url;       // absolute hosted image URL
+    shot.expiresAt; // ISO-8601 expiry (~1 hour)
+    ```
+
+    Key screenshot options: `url` (required), `width`, `height`, `fullPage`, `format` (`"png"` or `"jpeg"`), `imageQuality`, `waitMs`.
+  </Tab>
+  <Tab title="withSession helper">
+    ```typescript
+    import { browserAutomation } from "@sapiom/tools";
+
+    const result = await browserAutomation.withSession(async (session) => {
+      session.cdpUrl;      // CDP WebSocket — connect Playwright/Puppeteer here
+      session.liveViewUrl; // interactive live view for a person to watch or act
+      session.expiresAt;   // payment-context expiry
+
+      // Session-bound screenshot — no per-call charge
+      const shot = await session.screenshot({ url: "https://example.com" });
+      return shot.url;
+    });
+    ```
+
+    `withSession` opens a session, runs your callback, and closes the session in a `finally` block. Close errors are suppressed to preserve your callback's result.
+  </Tab>
+  <Tab title="Manual session lifecycle">
+    ```typescript
+    import { browserAutomation } from "@sapiom/tools";
+
+    const session = await browserAutomation.sessions.create({
+      idleTimeoutMinutes: 10,   // 1–60; defaults to 5
+      maxDurationMinutes: 60,   // 1–240; defaults to 20
+    });
+    try {
+      const shot = await browserAutomation.screenshot({
+        url: "https://example.com",
+        sessionId: session.sessionId, // no per-call charge
+      });
+    } finally {
+      const settlement = await browserAutomation.sessions.close(session.sessionId);
+      settlement.settled;           // true on successful settlement
+      settlement.capturedAmountUsd; // amount captured
+    }
+    ```
+  </Tab>
+  <Tab title="Sessions with identity">
+    ```typescript
+    import { browserAutomation } from "@sapiom/tools";
+
+    // Store credentials once
+    const identity = await browserAutomation.identities.create({
+      source: "https://app.example.com/login",
+      credentials: [{ type: "username_password", username: "user@example.com", password: "secret" }],
+    });
+
+    // Open a session pre-authenticated
+    const result = await browserAutomation.withSession(
+      async (session) => {
+        const shot = await session.screenshot({ url: "https://app.example.com/dashboard" });
+        return shot;
+      },
+      { identityId: identity.id },
+    );
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  `liveViewUrl` opens an interactive view of the live browser in any web browser. Use it to hand a human a sign-in or confirmation step without interrupting the agent's CDP connection. Treat the URL as a credential — send it to one trusted person and close the session when the step is done.
+</Note>
+
+HTTP failures throw `BrowserAutomationHttpError` (exported from `@sapiom/tools`), carrying `status`, `code`, and `body`.

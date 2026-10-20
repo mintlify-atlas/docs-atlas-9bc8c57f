@@ -1,7 +1,7 @@
 ---
 title: "defineAgent: Register a Sapiom Agent Definition"
 sidebarTitle: "defineAgent"
-description: "Factory that validates an agent's name, entry step, and steps map, attaches a non-enumerable brand symbol, and returns a typed AgentDefinition ready for the build phase."
+description: "Validates name, entry, and steps; brands the object for isAgentDefinition after bundling. Returns a typed AgentDefinition ready for buildManifest."
 ---
 
 `defineAgent` is the top-level factory every Sapiom agent module exports. It takes an `AgentDefinition` object — a name, an entry step name, a steps map, and an optional agent-level input schema — validates the shape at module load time, attaches a non-enumerable brand symbol so the build tooling can detect it after bundling and dynamic import, and returns the same object fully typed. Steps inside the definition remain type-erased over their routing generics, which is what allows a single `steps` map to hold heterogeneous steps.
@@ -58,7 +58,7 @@ interface AgentDefinition<
 ## Complete Usage Example
 
 ```typescript
-import { defineAgent, defineStep, goto, terminate, fail } from "@sapiom/agent";
+import { defineAgent, defineStep, goto, terminate, fail, type AgentExecutionContext } from "@sapiom/agent";
 import { z } from "zod/v4";
 
 // 1. Define the shared state shape
@@ -198,6 +198,8 @@ function isAnyDefinition(val: unknown) {
 The `TShared` generic flows from the agent definition into `ctx.shared` inside every step's `run`. You can declare the shape with a TypeScript interface and annotate `ctx` explicitly in each step:
 
 ```typescript
+import { defineStep, terminate, type AgentExecutionContext } from "@sapiom/agent";
+
 interface MyShared {
   jobId: string;
   attempts: number;

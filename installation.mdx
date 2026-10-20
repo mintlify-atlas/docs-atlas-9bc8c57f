@@ -1,5 +1,5 @@
 ---
-title: "Install Sapiom SDK Packages for Your Project"
+title: "Install Sapiom SDK Packages: Node, npm, and API Key Setup"
 sidebarTitle: "Installation"
 description: "Install @sapiom/agent, @sapiom/tools, @sapiom/cli, and @sapiom/mcp — with Node 18+ prerequisites, package descriptions, and SAPIOM_API_KEY setup."
 ---
@@ -8,7 +8,7 @@ The Sapiom SDK is a monorepo of focused packages published to npm under the `@sa
 
 ## Prerequisites
 
-- **Node.js 18 or later.** All packages require Node 18+. Check your version with `node --version`.
+- **Node.js 18 or later.** All core packages (`@sapiom/agent`, `@sapiom/tools`, `@sapiom/cli`, `@sapiom/mcp`) require Node 18+. Agent Studio (`@sapiom/agent-studio`, `@sapiom/harness`) requires **Node 20+**. Check your version with `node --version`.
 - **A package manager.** npm, pnpm, and yarn are all supported. The monorepo itself uses pnpm workspaces, but your project can use any manager.
 - **A Sapiom API key** for deploy, cloud-run, and any capability call that hits the Sapiom platform. Local scaffolding and `agents check` work without one. See [API Key setup](#api-key-setup) below.
 
@@ -71,7 +71,7 @@ yarn global add @sapiom/cli
 The local developer MCP server (`sapiom-dev`) that lets Claude Code, Codex, or any MCP-capable coding agent scaffold, validate, deploy, and inspect Sapiom agents. No global install needed — run it on demand with `npx`.
 
 <CodeGroup>
-```bash npm (Claude Code)
+```bash Claude Code
 claude mcp add sapiom -- npx -y @sapiom/mcp
 ```
 ```bash JSON config

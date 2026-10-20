@@ -1,7 +1,7 @@
 ---
 title: "Repositories: Private Git Repos for Agent Workflows"
 sidebarTitle: "Repositories"
-description: "Provision private in-network git repositories, hand them to a coding agent, and push the agent's output deterministically with pushFromSandbox — no tokens or SSH keys required."
+description: "Provision private in-network git repos, hand them to a coding agent, and push output deterministically with pushFromSandbox — no tokens required."
 ---
 
 The `repositories` namespace in `@sapiom/tools` gives you private, in-network git repositories authenticated through Sapiom's git gateway. You create a repository, pass it to a coding agent as `gitRepository`, and then call `pushFromSandbox` to commit and push the agent's edits — all in your own code, not inside the agent's prompt. There are no personal access tokens or SSH keys to manage; clones and pushes are authenticated through your tenant credentials.
@@ -95,11 +95,7 @@ Use `attach` to reconstruct a `Repository` handle from values previously returne
 
 ```typescript
 // In a later step — rehydrate from stored values
-const repo = await repositories.attach({
-  id: storedId,
-  name: "landing-page",
-  cloneUrl: storedCloneUrl,
-});
+const repo = repositories.attach(storedSlug, storedCloneUrl);
 
 // Now push from the sandbox a prior step handed you
 await repo.pushFromSandbox(sandbox, { message: "chore: update" });
@@ -159,7 +155,7 @@ This pattern keeps publishing exact and repeatable instead of depending on the a
 | `repositories.create(name)` | Provision a new private repository |
 | `repositories.get(name)` | Get a repository by name |
 | `repositories.list()` | List all your repositories |
-| `repositories.attach(ref)` | Rehydrate a handle from stored values |
+| `repositories.attach(slug, cloneUrl)` | Rehydrate a handle from stored values |
 | `repositories.delete(name)` | Delete a repository (idempotent) |
 | `repo.pushFromSandbox(sandbox, opts?)` | Commit and push the sandbox's working tree |
 | `repo.delete()` | Delete this repository (idempotent) |

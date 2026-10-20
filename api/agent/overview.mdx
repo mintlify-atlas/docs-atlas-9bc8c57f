@@ -1,7 +1,7 @@
 ---
 title: "@sapiom/agent: Agent Authoring Contract Reference"
 sidebarTitle: "Overview"
-description: "The versioned public contract shared by customer agent definitions, the sandbox step-runner, and the engine. Lean by design — types plus a small protocol runtime over zod."
+description: "Versioned public contract for Sapiom agents. Types and a small protocol runtime over zod, shared by agent definitions, the step-runner, and the engine."
 ---
 
 The `@sapiom/agent` package is the load-bearing authoring contract for Sapiom orchestrations. It is intentionally lean — types plus roughly 100 lines of protocol runtime built on zod — with no capability clients, no engine internals, and no framework imports. Every customer agent definition, the sandbox step-runner that executes individual steps, and the engine that validates completion payloads all read from this single versioned package.
@@ -196,12 +196,35 @@ The `ctx.shared` snapshot has a hard 256 KiB (262,144 byte) limit measured as th
 | `StepInputContract` | Type |
 | `AgentInputContract` | Type |
 
+### Non-Retryable Step Errors
+
+The closed set of platform-owned step errors that bypass workflow retry. Use the guards to check cross-process payloads without relying on `instanceof`.
+
+| Export | Kind |
+|--------|------|
+| `isNonRetryableStepErrorPayload(val)` | Structural guard — returns `true` for any non-retryable platform error payload |
+| `parseNonRetryableStepErrorPayload(val)` | Parse and strip extra properties; returns the typed payload or `undefined` |
+| `NonRetryableStepErrorPayload` | Union of `CtxSharedSizeLimitExceededPayload \| StepInputValidationErrorPayload \| CtxSharedSerializationErrorPayload` |
+
+### Package Inventory
+
+Multi-agent package inventory — a separate build→engine contract from the single-agent manifest.
+
+| Export | Kind |
+|--------|------|
+| `PACKAGE_INVENTORY_PROTOCOL` | Protocol version constant (`1`) |
+| `packageInventorySchema` | Zod schema for the package inventory JSON |
+| `PackageInventory` | Full inventory type |
+| `PackageInventoryAgent` | Per-agent entry in the inventory |
+| `PackageInventoryIdentityIssue` | Reason a package-inventory identity is provisional |
+| `PackageInventoryVersion` | `'working-tree' \| 'bundle'` version discriminant |
+
 ### Injected Run Configuration
 
 | Export | Kind |
 |--------|------|
-| `resolveResourceHandle(options)` | Read a chosen resource handle from injected run config |
-| `ResolveResourceHandleOptions` | Options type |
+| `resolveResourceHandle(input, opts)` | Read a chosen resource handle from injected run config; falls back to `opts.fallback` |
+| `ResolveResourceHandleOptions` | Options type: `{ fallback: string; key?: string }` |
 
 ## Design Constraint: Stay Lean
 

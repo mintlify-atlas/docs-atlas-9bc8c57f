@@ -1,7 +1,7 @@
 ---
 title: "Models: Managed Loop and Coding Agent Capabilities"
 sidebarTitle: "Models"
-description: "Run Sapiom's managed agentic loop or a full coding agent that edits files in a sandbox — synchronously with models.run or asynchronously with launch and pauseUntilSignal."
+description: "Run the managed agentic loop with models.run or a full coding agent with models.coding — synchronous or async via launch and pauseUntilSignal."
 ---
 
 The `models` namespace in `@sapiom/tools` gives you two distinct ways to put a model to work: `models.run` for the managed agentic loop (remote MCP tools, no filesystem), and `models.coding` for a full coding agent that clones a git repository, edits files, and hands you back the live sandbox it ran in. Both have synchronous (`run`) and asynchronous (`launch`) variants so you can pause a long-running task and resume it in a later step rather than holding a connection open.
@@ -191,6 +191,37 @@ export const handleCodingResult = defineStep({
         await sandboxes.attach(input.executionEnvironment.id),
         { message: "build: marketing site" }
       );
+    }
+  },
+});
+```
+
+### Pausing on a managed loop run
+
+The same pattern works for `models.launch` using `MODEL_RUN_RESULT_SIGNAL`:
+
+```typescript
+import { defineStep } from "@sapiom/agent";
+import { models, MODEL_RUN_RESULT_SIGNAL } from "@sapiom/tools";
+import type { ModelRunResultPayload } from "@sapiom/tools";
+
+export const launchModelRun = defineStep({
+  name: "launch-model-run",
+  pause: { signal: MODEL_RUN_RESULT_SIGNAL },
+  async run({ pauseUntilSignal }) {
+    const handle = await models.launch({
+      prompt: "Summarize the top five open issues.",
+      mcps: [{ url: "https://mcp.example.com/mcp" }],
+    });
+    return pauseUntilSignal(handle, { resumeStep: "handleModelResult" });
+  },
+});
+
+export const handleModelResult = defineStep({
+  name: "handle-model-result",
+  async run({ input }: { input: ModelRunResultPayload }) {
+    if (input.status === "completed") {
+      console.log(input.output);
     }
   },
 });

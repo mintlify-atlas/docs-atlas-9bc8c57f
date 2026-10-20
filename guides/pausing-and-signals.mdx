@@ -1,5 +1,5 @@
 ---
-title: "Pause Agent Steps and Resume with Signals"
+title: "Pausing Agent Steps and Resuming with External Signals"
 sidebarTitle: "Pausing & Signals"
 description: "Learn how pauseUntilSignal durably suspends a step at zero cost, and how to resume it from a long-running capability or a human-in-the-loop approval gate."
 ---
@@ -197,7 +197,7 @@ const finalize = defineStep({
 
 Every `pause` declaration adds a durable edge to the step graph. The build phase includes it in the agent manifest and `validateGraph` checks that `resumeStep` references a real step. The approval-chain example shows a realistic multi-gate pattern:
 
-```
+```text
   start → present ──(pause: approval.decision)──▶ decide
                                                      │
                                          ┌───────────┤───────────┐

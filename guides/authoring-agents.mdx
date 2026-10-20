@@ -80,6 +80,22 @@ export const agent = defineAgent({
   A [zod/v4](https://zod.dev) schema that types and validates the step's inbound payload. On the **entry step** this schema is the agent's public API — the dashboard Run form, trigger snippets, and the engine's pre-dispatch validation are all derived from it. See [Step Graph](/guides/step-graph) for details.
 </Accordion>
 
+<Accordion title="pause">
+  Declares a static pause edge so the build phase can include it in the agent manifest. Both `signal` (the signal name string) and `resumeStep` (the step that receives the resumed input) must match what you pass to `pauseUntilSignal` at runtime. Without this declaration, calling `pauseUntilSignal` in `run` is a compile error. See [Pausing & Signals](/guides/pausing-and-signals) for the full pause contract.
+</Accordion>
+
+<Accordion title="timeoutMs">
+  An optional per-step execution timeout in milliseconds. When the step's `run` function exceeds this wall-clock budget the runner aborts and retries (up to `maxAttemptsPerStep`). Omit it to use the platform default.
+</Accordion>
+
+<Accordion title="description">
+  An optional human-authored one-liner for the canvas step inspector. Read by `buildManifest` alongside `inputSchema` — purely informational, never executed.
+</Accordion>
+
+<Accordion title="capabilities">
+  An optional array of Sapiom capability identifiers (`string[]`) this step declares it calls, shown in the step inspector. A run's actual call trace supersedes this when observed. Purely informational.
+</Accordion>
+
 <Accordion title="run">
   The async function that executes the step. Its first argument is the validated step input; the second is `AgentExecutionContext` (`ctx`). The return type is derived from `next`, `terminal`, `canFail`, and `pause` — undeclared returns are compile errors. See [Context & State](/guides/context-and-shared-state) for what `ctx` provides.
 </Accordion>
@@ -121,6 +137,14 @@ export const hello = defineAgent({
 
 <Accordion title="entry">
   The step name that receives the initial run input. Must match a key in `steps`. The entry step's `inputSchema` (if present) is the agent's public API — see [Step Graph](/guides/step-graph).
+</Accordion>
+
+<Accordion title="inputSchema">
+  An optional agent-level Zod schema for the entry input. When the entry step declares no `inputSchema`, `defineAgent` folds this schema onto it — the manifest's entry step carries the JSON Schema and the dashboard renders its fields. Declaring a **different** schema here and on the entry step is a build error; declare the contract once.
+</Accordion>
+
+<Accordion title="description">
+  An optional human-authored summary for the canvas Overview panel. Purely informational — never executed or validated by the runtime.
 </Accordion>
 
 <Accordion title="steps">

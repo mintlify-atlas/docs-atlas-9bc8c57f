@@ -1,7 +1,7 @@
 ---
-title: "Deploy and Validate Sapiom Agents from the CLI"
+title: "Scaffold, Validate, and Deploy Sapiom Agents via CLI"
 sidebarTitle: "Deploy"
-description: "Learn how to scaffold, bundle-check, and deploy Sapiom agents using the CLI and the sapiom-dev MCP — including the authentication flow and one-command cloud builds."
+description: "Scaffold, validate, and ship agents to the Sapiom cloud using the CLI or sapiom-dev MCP — covering init, check, link, deploy, and the authentication flow."
 ---
 
 The Sapiom CLI (`@sapiom/cli`) is the primary command-line surface for the full agent lifecycle: scaffolding a new project, validating its bundle and step graph locally, and shipping it to the Sapiom cloud engine. Every CLI command also has a corresponding MCP tool in the `sapiom-dev` server, so your coding agent can run the same flow without leaving its session.
@@ -55,17 +55,20 @@ Run `sapiom agents check` in CI on every pull request — it catches graph and m
 
 <Step title="Authenticate with Sapiom">
 
-Deploying requires a Sapiom API key. The first time you run a networked command, the CLI prompts you to authenticate. You can also trigger this explicitly via the MCP:
+Deploying requires a Sapiom API key. Use the CLI's `login` command to open a browser-based device-authorization flow, then cache the resulting credential:
 
 ```bash
-# Via MCP in your coding agent
-sapiom_authenticate   # opens a browser login flow, caches the key
+sapiom login
 ```
 
-Credentials are stored per-environment in `~/.sapiom/credentials.json`. After the initial login, all subsequent deploy and link commands use the cached key automatically. Check your current authentication state with:
+Credentials are stored per-environment in `~/.sapiom/credentials.json`. After the initial login, all subsequent deploy and link commands use the cached key automatically. Sign out with `sapiom logout`.
 
-```bash
-sapiom_status         # MCP: reports who you're authenticated as
+When working through the `sapiom-dev` MCP (inside Claude Code or another MCP client), use the equivalent MCP tools instead:
+
+```text
+sapiom_authenticate   # opens a browser login flow, caches the key
+sapiom_status         # reports who you're authenticated as
+sapiom_logout         # clears cached credentials
 ```
 
 </Step>
@@ -88,6 +91,7 @@ Linking associates your local `sapiom.json` with a cloud definition ID. The equi
 
 ```bash
 sapiom agents deploy
+sapiom agents deploy --branch main   # push to a specific branch (default: main)
 ```
 
 A successful deploy produces a **ready cloud build** — after that, the agent is available for production runs, schedules, and event triggers. The equivalent MCP tool is `sapiom_dev_agents_deploy`.
@@ -127,13 +131,15 @@ Then instruct your coding agent to use these tools in sequence:
 
 ## Running and Inspecting After Deploy
 
-Once deployed, start a real cloud execution and inspect its result:
+Once deployed, start a real cloud execution and inspect its result using the CLI:
 
 ```bash
-# Trigger a production run via MCP
-# sapiom_dev_agents_run    — starts a cloud execution
-# sapiom_dev_agents_inspect — polls or fetches its result
+sapiom agents run                  # start a cloud execution
+sapiom agents run --input '{"k":"v"}'   # pass execution input as JSON
+sapiom agents logs [executionId]   # inspect a run, build (--build), or recent runs
 ```
+
+The equivalent MCP tools are `sapiom_dev_agents_run` and `sapiom_dev_agents_inspect`.
 
 For emitting events or resuming paused executions, see the Events & Signals commands:
 
@@ -183,7 +189,7 @@ DO_NOT_TRACK=1 sapiom agents deploy
   <Card title="MCP Servers" icon="server" href="/guides/mcp-servers">
     Understand the difference between sapiom-dev and the remote sapiom MCP.
   </Card>
-  <Card title="Events & Signals" icon="bolt" href="/guides/deploy">
+  <Card title="Events & Signals" icon="bolt" href="/guides/events-vs-signals">
     Emit events that start runs and deliver signals that resume paused ones.
   </Card>
 </CardGroup>
