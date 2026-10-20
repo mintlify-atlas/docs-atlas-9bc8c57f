@@ -1,0 +1,184 @@
+---
+title: "sapiom agents schedule: Manage Agent Triggers and Schedules"
+sidebarTitle: "schedule"
+description: "Reference for sapiom agents schedule — preview cron expressions, create recurring and one-off triggers, list all schedules, inspect, and cancel triggers."
+---
+
+The `sapiom agents schedule` subgroup attaches time-based triggers to deployed agents and manages their full lifecycle. You can create a recurring trigger using a cron expression, schedule a single one-off run at a specific ISO timestamp, inspect upcoming fires, and cancel any trigger that is no longer needed. All schedule operations target the Sapiom cloud and require the agent to be already deployed.
+
+<Note>
+  Schedule commands require authentication. Run `sapiom_authenticate` (via the MCP) or ensure your Sapiom credentials are cached in `~/.sapiom/credentials.json` before using these commands.
+</Note>
+
+---
+
+## sapiom agents schedule preview
+
+Validate a cron expression and preview its next occurrences before creating a real trigger. This command is purely local — it does not contact Sapiom cloud — and is safe to run without authentication.
+
+```bash
+sapiom agents schedule preview "<cron>"
+```
+
+**Example**
+
+```bash
+sapiom agents schedule preview "0 9 * * 1-5"
+```
+
+The command prints the next several fire times for the expression so you can confirm the schedule matches your intent before committing it to a deployed agent.
+
+<ParamField path="cron" type="string" required>
+  A standard five-field cron expression (minute, hour, day-of-month, month, day-of-week). Quote the expression to prevent shell word-splitting on the spaces.
+</ParamField>
+
+---
+
+## sapiom agents schedule create
+
+Attach a new trigger to a deployed agent. Two modes are supported: a **recurring** trigger defined by a cron expression, and a **one-off** trigger that fires at a single absolute time.
+
+### Recurring (cron)
+
+```bash
+sapiom agents schedule create <agent> --cron "<expr>" --timezone <tz>
+```
+
+**Example**
+
+```bash
+sapiom agents schedule create my-app --cron "0 9 * * 1-5" --timezone America/New_York
+```
+
+This creates a trigger that runs `my-app` every weekday at 09:00 Eastern Time. The `--timezone` flag interprets the cron expression in the specified IANA timezone so that wall-clock semantics (e.g. "9 AM local") survive daylight-saving transitions.
+
+<ParamField path="agent" type="string" required>
+  The slug of the deployed agent to attach the trigger to.
+</ParamField>
+
+<ParamField path="--cron" type="string" required>
+  A five-field cron expression. Use `sapiom agents schedule preview` to validate it first.
+</ParamField>
+
+<ParamField path="--timezone" type="string">
+  An IANA timezone name (e.g. `America/New_York`, `Europe/London`, `UTC`). When omitted, the expression is interpreted in UTC.
+</ParamField>
+
+### One-off (single fire)
+
+```bash
+sapiom agents schedule create <agent> --at <iso>
+```
+
+**Example**
+
+```bash
+sapiom agents schedule create my-app --at 2026-07-01T17:00:00Z
+```
+
+The agent runs exactly once at the specified UTC timestamp. After it fires, the trigger is automatically marked as complete and will not fire again.
+
+<ParamField path="--at" type="string" required>
+  An ISO 8601 UTC timestamp (e.g. `2026-07-01T17:00:00Z`) at which the agent should run once. The `Z` suffix (UTC offset) is required.
+</ParamField>
+
+---
+
+## sapiom agents schedule list
+
+List all active schedules attached to a specific agent.
+
+```bash
+sapiom agents schedule list <agent>
+```
+
+**Example**
+
+```bash
+sapiom agents schedule list my-app
+```
+
+The output includes the schedule ID, the trigger type (cron or one-off), the expression or target time, the timezone, and the current status of each trigger.
+
+<ParamField path="agent" type="string" required>
+  The slug of the deployed agent whose schedules you want to list.
+</ParamField>
+
+---
+
+## sapiom agents schedule inspect
+
+Inspect a single schedule by its ID. Returns the full trigger configuration, the next scheduled fire time, and recent fire history.
+
+```bash
+sapiom agents schedule inspect <scheduleId>
+```
+
+**Example**
+
+```bash
+sapiom agents schedule inspect sched_7xRmKp2L
+```
+
+<ParamField path="scheduleId" type="string" required>
+  The unique identifier of the schedule to inspect. Retrieve schedule IDs from `sapiom agents schedule list <agent>`.
+</ParamField>
+
+The output includes:
+
+- Full trigger configuration (cron expression / one-off timestamp, timezone)
+- Next scheduled fire time
+- History of recent fires with their execution IDs and outcomes
+
+---
+
+## sapiom agents schedule cancel
+
+Cancel a schedule so that it fires no more. Cancelling a recurring cron trigger stops all future fires immediately. Cancelling a one-off trigger that has not yet fired prevents it from running.
+
+```bash
+sapiom agents schedule cancel <scheduleId>
+```
+
+**Example**
+
+```bash
+sapiom agents schedule cancel sched_7xRmKp2L
+```
+
+<ParamField path="scheduleId" type="string" required>
+  The unique identifier of the schedule to cancel.
+</ParamField>
+
+<Warning>
+  Cancellation is immediate and irreversible. To resume a cancelled recurring schedule you must create a new one with `sapiom agents schedule create`.
+</Warning>
+
+---
+
+## Quick reference
+
+```bash
+# Validate a cron expression before using it
+sapiom agents schedule preview "0 9 * * 1-5"
+
+# Create a recurring trigger — weekdays at 09:00 Eastern
+sapiom agents schedule create my-app \
+  --cron "0 9 * * 1-5" \
+  --timezone America/New_York
+
+# Create a one-off trigger — fire once at a specific UTC time
+sapiom agents schedule create my-app \
+  --at 2026-07-01T17:00:00Z
+
+# List all schedules attached to an agent
+sapiom agents schedule list my-app
+
+# Inspect a specific schedule (config + next fire + recent history)
+sapiom agents schedule inspect sched_7xRmKp2L
+
+# Cancel a schedule permanently
+sapiom agents schedule cancel sched_7xRmKp2L
+```
+
+All `schedule` subcommands support the `--json` global flag for machine-readable output, making them easy to drive from CI pipelines or shell scripts.

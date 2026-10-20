@@ -1,0 +1,91 @@
+---
+title: "Sapiom SDK: TypeScript SDK for AI Agent Orchestration"
+sidebarTitle: "Introduction"
+description: "Sapiom is a TypeScript/Node.js SDK for building, running, and operating AI agents — author typed step graphs, call capabilities, and ship from CLI or Studio."
+---
+
+Sapiom is a TypeScript SDK for building, running, and operating AI agents on the Sapiom platform. You author agents as typed step graphs, call Sapiom capabilities — sandboxes, git repositories, coding models, search, file storage, and more — directly from your code, and deploy them to the Sapiom engine using the CLI, Agent Studio, or your coding agent's MCP server. The SDK is a focused monorepo: install only the packages your project needs.
+
+<Note>
+  **Beta status:** Sapiom SDK is currently at v0.x. The API is production-ready and actively maintained, but may change before v1.0.0.
+</Note>
+
+## What you can build
+
+With the Sapiom SDK you can author agents that orchestrate multi-step AI workflows, call managed capabilities (sandboxes, coding agents, search, email, domains, databases), pause on long-running dispatched tasks, and resume when they complete. You can also call every capability directly from your own TypeScript code — outside any agent — using `@sapiom/tools`.
+
+## Package architecture
+
+The SDK is organized into focused packages that build on each other. The diagram below shows how they relate:
+
+```
+@sapiom/agent            Authoring contract (defineAgent, directives, types)
+    ↑
+    ├── @sapiom/agent-runtime   Host-agnostic graph-walker runtime
+    └── @sapiom/agent-core      Scaffold / validate / operate (pure functions)
+            ↑
+            ├── @sapiom/cli     Command line
+            └── @sapiom/mcp     Local developer MCP (sapiom-dev)
+
+@sapiom/tools            Typed capability client (sandboxes, repos, models, …)
+
+@sapiom/browser-pay      CDP payment interceptor (placeholder card to relay)
+
+@sapiom/harness          Agent Studio (local web app; launched via @sapiom/agent-studio)
+    ↑
+    └── @sapiom/harness-desktop   Sapiom Studio desktop app (Electron host, ships as installers)
+```
+
+## Core packages
+
+<CardGroup cols={2}>
+  <Card title="@sapiom/agent" icon="code" href="https://www.npmjs.com/package/@sapiom/agent">
+    The authoring contract. Provides `defineAgent`, `defineStep`, directives (`goto`, `terminate`, `pauseUntilSignal`, `fail`, `retry`), and all types needed to describe a typed step graph.
+  </Card>
+  <Card title="@sapiom/tools" icon="wrench" href="https://www.npmjs.com/package/@sapiom/tools">
+    Typed client for every Sapiom capability — sandboxes, repositories, coding models, LLM routing, search, file storage, email, databases, memory, and more.
+  </Card>
+  <Card title="@sapiom/cli" icon="terminal" href="https://www.npmjs.com/package/@sapiom/cli">
+    Command-line interface for scaffolding, validating, deploying, and scheduling agents. Also launches Agent Studio locally.
+  </Card>
+  <Card title="@sapiom/mcp" icon="plug" href="https://www.npmjs.com/package/@sapiom/mcp">
+    The local developer MCP server (`sapiom-dev`). Lets your coding agent — Claude Code or Codex — scaffold, test, deploy, and inspect Sapiom agents over stdio.
+  </Card>
+</CardGroup>
+
+## Agent Studio
+
+Agent Studio is a local web app that runs your coding agent in a Sapiom-configured environment: MCP servers pre-wired, agent projects tracked, one-click deploy and run, and a live Agent Map canvas.
+
+```bash
+npx @sapiom/agent-studio@latest [dir]
+```
+
+Prefer a native desktop experience? **Sapiom Studio** is a signed Electron app (macOS, Windows, Linux) that hosts the same experience. Download installers from [GitHub Releases](https://github.com/sapiom/sapiom-js/releases).
+
+## Key concepts
+
+**Agents as step graphs.** An agent is a set of named steps, each declaring its allowed outbound transitions. The `run` function's return type is *derived* from those declarations — an undeclared `goto` is a compile error. This means the build phase can validate the graph without executing any code.
+
+**Directives.** Steps communicate with the runtime through directives: `goto` transitions to the next step, `terminate` ends the run with a result, `pauseUntilSignal` suspends the run until a dispatched capability (or external signal) delivers a result, and `fail` marks the step as permanently failed.
+
+**Capabilities.** `@sapiom/tools` exposes every platform capability — sandboxes, repositories, coding agents, search, LLM routing, and more. Inside an agent step they are available on `ctx.sapiom`; outside an agent, create a client with `createClient({ apiKey })`.
+
+**Two MCP servers.** `@sapiom/mcp` is the *local developer* surface (`sapiom_dev_*` tools for authoring). The remote *Sapiom* MCP connector (`sapiom_sandbox_*`, scrape, search) is the capability surface for paid tool calls. They are distinct and serve different purposes.
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="quickstart">
+    Scaffold and deploy your first agent in minutes using the CLI, Agent Studio, or direct authoring.
+  </Card>
+  <Card title="Installation" icon="package" href="installation">
+    Install the packages you need, set up your API key, and confirm prerequisites.
+  </Card>
+  <Card title="Agent Authoring" icon="pen-to-square" href="/guides/authoring-agents">
+    Learn how to write typed step graphs, declare transitions, and use `ctx.shared`.
+  </Card>
+  <Card title="Capabilities" icon="bolt" href="/guides/capabilities-overview">
+    Call sandboxes, coding agents, search, storage, and every other Sapiom capability.
+  </Card>
+</CardGroup>

@@ -1,0 +1,238 @@
+---
+title: "Models: Managed Loop and Coding Agent Capabilities"
+sidebarTitle: "Models"
+description: "Run Sapiom's managed agentic loop or a full coding agent that edits files in a sandbox — synchronously with models.run or asynchronously with launch and pauseUntilSignal."
+---
+
+The `models` namespace in `@sapiom/tools` gives you two distinct ways to put a model to work: `models.run` for the managed agentic loop (remote MCP tools, no filesystem), and `models.coding` for a full coding agent that clones a git repository, edits files, and hands you back the live sandbox it ran in. Both have synchronous (`run`) and asynchronous (`launch`) variants so you can pause a long-running task and resume it in a later step rather than holding a connection open.
+
+## Installation and import
+
+```bash
+npm install @sapiom/tools
+```
+
+```typescript
+import { createClient } from "@sapiom/tools";
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+
+// Ambient import inside an agent step
+import { models } from "@sapiom/tools";
+```
+
+## `models.run` — the managed loop
+
+`models.run` runs Sapiom's server-side agentic loop. The loop calls remote MCP servers as tools and returns the final text output. There is no sandbox and no filesystem — it is a pure network-and-model loop.
+
+```typescript
+import { models } from "@sapiom/tools";
+
+const run = await models.run({
+  prompt: "List the open issues labelled `bug` and summarize them in three bullets.",
+  system: "You are a concise triage assistant.",
+  mcps: [
+    {
+      url: "https://mcp.example.com/mcp",
+      headers: { authorization: `Bearer ${token}` },
+    },
+  ],
+});
+
+if (run.status === "completed") {
+  console.log(run.output);
+}
+```
+
+### Options
+
+<Accordion title="models.run / models.launch options">
+
+| Option | Type | Notes |
+|---|---|---|
+| `prompt` | `string` | Required. The user message to the model. |
+| `system` | `string` | Optional system prompt. |
+| `mcps` | `ModelMcp[]` | Remote MCP servers to use as tools (Streamable HTTP). |
+| `model` | `ModelLabel` | `"small"`, `"medium"`, or `"large"`. Omit to use the platform default. |
+| `deadlineMinutes` | `number` | How long you're willing to wait. Accepted and sent; platform-honoring is in progress. |
+
+</Accordion>
+
+<Note>
+  Never pass a raw provider model ID to `model`. Use only the platform labels `"small"`, `"medium"`, or `"large"`. An unrecognized label routes via the platform default and is reported in `result.warnings`.
+</Note>
+
+## `models.coding.run` — the coding agent
+
+`models.coding.run` gives a coding agent a task in natural language. It clones a git repository into the sandbox at `/workspace/<slug>`, edits files to complete the task, and returns the live sandbox handle when done.
+
+```typescript
+import { models, repositories } from "@sapiom/tools";
+
+const repo = await repositories.create("api");
+const run = await models.coding.run({
+  task: "Add a /health endpoint that returns 200 OK.",
+  gitRepository: repo,
+});
+
+if (run.result?.success) {
+  await repo.pushFromSandbox(run.sandbox, { message: "feat: health" });
+}
+```
+
+### The returned sandbox is live
+
+`run.sandbox` is a full `Sandbox` handle you can use directly:
+
+```typescript
+const run = await models.coding.run({ task, gitRepository: repo });
+
+// Read a file the agent wrote
+const content = await run.sandbox.readFile("/workspace/api/src/health.ts");
+
+// Run a command to verify
+const { exitCode } = await run.sandbox.exec("npm test");
+
+// Pass the sandbox to a follow-up coding run
+const run2 = await models.coding.run({
+  task: "Add OpenAPI docs for the /health endpoint.",
+  gitRepository: repo,
+  sandbox: run.sandbox, // chain runs in the same environment
+});
+```
+
+### `keepSandbox`
+
+By default the sandbox stays alive after a coding run so later steps can read files or push from it. Set `keepSandbox: false` to tear it down automatically when the run finishes:
+
+```typescript
+const run = await models.coding.run({
+  task: "Generate a report and save it to /workspace/report.md.",
+  keepSandbox: false, // sandbox is destroyed after the run
+});
+```
+
+### `workingDirectory`
+
+Set the coding agent's working directory relative to the run's workspace:
+
+```typescript
+const run = await models.coding.run({
+  task: "Refactor the auth module.",
+  gitRepository: repo,
+  workingDirectory: "packages/auth",
+});
+```
+
+### Coding options
+
+<Accordion title="models.coding.run / models.coding.launch options">
+
+| Option | Type | Notes |
+|---|---|---|
+| `task` | `string` | Required. Natural-language task for the coding agent. |
+| `gitRepository` | `Repository` | Repository to clone into the sandbox at `/workspace/<slug>`. |
+| `sandbox` | `Sandbox` | Existing sandbox to reuse (chain runs). |
+| `keepSandbox` | `boolean` | Default `true`. Set `false` to destroy the sandbox when the run finishes. |
+| `workingDirectory` | `string` | Relative path inside the workspace to use as the working directory. |
+| `model` | `ModelLabel` | `"small"`, `"medium"`, or `"large"`. |
+| `deadlineMinutes` | `number` | How long you're willing to wait for the run. |
+
+</Accordion>
+
+## Async runs with `launch` and `handle.wait()`
+
+`run` blocks until the task finishes, which for a coding task can take several minutes. Use `launch` to start the run and check on it or pause on it:
+
+```typescript
+import { models } from "@sapiom/tools";
+
+// Start the run — returns immediately
+const handle = await models.coding.launch({
+  task: "Build a REST API with CRUD endpoints.",
+  gitRepository: repo,
+});
+
+// Poll manually
+const status = await handle.status();
+
+// Or block until done with a timeout
+const result = await handle.wait({ timeoutMs: 15 * 60 * 1000 });
+if (result.result?.success) {
+  await repo.pushFromSandbox(result.sandbox, { message: "feat: api" });
+}
+```
+
+## Pausing with `pauseUntilSignal`
+
+Inside a Sapiom agent step, pass the handle to `pauseUntilSignal` so the step pauses and a resume step receives the result. This avoids holding a long HTTP connection open and lets Sapiom manage the lifecycle:
+
+```typescript
+import { defineStep } from "@sapiom/agent";
+import { models, CODING_RESULT_SIGNAL } from "@sapiom/tools";
+import type { CodingResultPayload } from "@sapiom/tools";
+
+export const launchCodingRun = defineStep({
+  name: "launch-coding-run",
+  pause: { signal: CODING_RESULT_SIGNAL },
+  async run({ pauseUntilSignal }) {
+    const handle = await models.coding.launch({
+      task: "Build a one-page marketing site in index.html.",
+      gitRepository: repo,
+    });
+    return pauseUntilSignal(handle, { resumeStep: "handleCodingResult" });
+  },
+});
+
+export const handleCodingResult = defineStep({
+  name: "handle-coding-result",
+  async run({ input }: { input: CodingResultPayload }) {
+    if (input.result?.success) {
+      await repo.pushFromSandbox(
+        await sandboxes.attach(input.executionEnvironment.id),
+        { message: "build: marketing site" }
+      );
+    }
+  },
+});
+```
+
+## Keep exact steps out of the agent's prompt
+
+Have the coding agent write code, and perform actions like git pushes or deploys in your own code. A `result.success` of `true` means the run finished — not that anything was published.
+
+```typescript
+// Good: agent writes, your code publishes
+const run = await models.coding.run({ task, gitRepository: repo });
+if (run.result?.success) {
+  await repo.pushFromSandbox(run.sandbox, { message: "feat: new feature" });
+}
+```
+
+## Error handling
+
+Coding HTTP failures are structured — catch `CodingRunHttpError`:
+
+```typescript
+import { models, CodingRunHttpError } from "@sapiom/tools";
+
+try {
+  const run = await models.coding.run({ task, gitRepository: repo });
+} catch (err) {
+  if (err instanceof CodingRunHttpError) {
+    if (err.code === "repository_not_found") {
+      return fail(err.message);
+    }
+    throw err;
+  }
+}
+```
+
+`CodingRunHttpError` carries `status`, `code`, `requestId`, and `body`.
+
+## Deferred capacity and `deadlineMinutes`
+
+`deadlineMinutes` expresses how long you're willing to wait and lets the platform route to a cheaper tier when deadlines are honored. A run waiting for capacity reports `awaiting_capacity`, which is not terminal — `run` keeps polling and a `launch` handle keeps waiting. Polling backs off (doubling, up to one minute between checks) while a run is parked so a long deadline doesn't exhaust requests.
+
+<Note>
+  The platform does not honor `deadlineMinutes` yet. The field is accepted and sent, but every run still dispatches immediately. Leave it unset for immediate dispatch behavior.
+</Note>

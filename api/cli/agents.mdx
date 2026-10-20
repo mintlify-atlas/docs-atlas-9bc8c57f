@@ -1,0 +1,167 @@
+---
+title: "sapiom agents: Scaffold, Validate, Deploy, and Operate"
+sidebarTitle: "agents"
+description: "Complete reference for all sapiom agents subcommands — init, check, deploy, emit, and signal — with flags, examples, and idempotency behaviour."
+---
+
+The `sapiom agents` command group manages the full lifecycle of a Sapiom agent: from scaffolding a new project to validating it locally, shipping it to the cloud, and operating running executions with events and signals. Every subcommand accepts `--json` for machine-readable output, making it suitable for use in CI pipelines and shell scripts.
+
+## Global flag
+
+<ParamField path="--json" type="flag">
+  Emit the result as a JSON object on stdout instead of the default human-readable format. Applies to every `sapiom agents` subcommand. Errors also surface as JSON when this flag is set.
+</ParamField>
+
+---
+
+## sapiom agents init
+
+Scaffold a new agent project in a directory named after the provided `<name>`. The command writes a `sapiom.json` manifest, a starter step file, and a `package.json` pre-configured with the correct Sapiom dependencies.
+
+```bash
+sapiom agents init <name>
+```
+
+**Example**
+
+```bash
+sapiom agents init lead-router
+```
+
+This creates a `lead-router/` directory with a ready-to-edit agent project.
+
+<ParamField path="name" type="string" required>
+  The name of the new agent project. Used as the directory name and the default agent slug in `sapiom.json`.
+</ParamField>
+
+---
+
+## sapiom agents check
+
+Validate the agent project in the current directory without deploying anything. The check runs three layers of validation in sequence:
+
+1. **Bundle** — transpiles and bundles the step code to confirm it compiles without errors.
+2. **Manifest** — parses and validates the `sapiom.json` definition file against the schema.
+3. **Graph** — walks the step graph declared in the manifest and verifies that every referenced step is reachable and that entry/exit invariants hold.
+
+```bash
+sapiom agents check
+```
+
+<Note>
+  `check` operates entirely on local code — it does not contact Sapiom cloud and requires no authentication. Run it as a pre-commit or CI gate to catch configuration errors before deploying.
+</Note>
+
+---
+
+## sapiom agents deploy
+
+Bundle the current agent project, push the bundle to Sapiom cloud, and trigger a cloud build. The command waits for the build to complete and prints a success receipt (or a build error with a log URL).
+
+```bash
+sapiom agents deploy
+```
+
+The deploy uses the `id` recorded in `sapiom.json` to address the hosted orchestration. If the agent has not been linked to a hosted orchestration yet, run `sapiom agents link` (or use the MCP tool `sapiom_dev_agents_link`) first, or deploy via the `sapiom-dev` MCP which handles linking automatically.
+
+---
+
+## sapiom agents emit
+
+Emit a custom event into the Sapiom event bus. An emitted event **fans out** to every active `event` trigger that matches the event type — starting zero or more new executions. It does not interact with runs that are already in progress.
+
+```bash
+sapiom agents emit <type> [options]
+```
+
+**Example**
+
+```bash
+sapiom agents emit lead.created \
+  --payload '{"leadId":"l_42","source":"webform"}' \
+  --event-id crm-evt-8f2a
+```
+
+### Flags
+
+<ParamField path="type" type="string" required>
+  The event type string (e.g. `lead.created`, `order.shipped`). Must match the `eventType` declared in an agent's trigger to start a run.
+</ParamField>
+
+<ParamField path="--payload" type="string">
+  A JSON string that becomes the event payload. The agent receives this as its input when the trigger fires.
+</ParamField>
+
+<ParamField path="--event-id" type="string">
+  A caller-supplied identifier for this delivery. Resubmitting the same `--event-id` returns the original receipt and starts nothing new — making retries safe. Omit it and every call is treated as a distinct event.
+</ParamField>
+
+### Idempotency
+
+`--event-id` is the idempotency key for event delivery. If you supply the same value on a retry, the platform returns the original receipt without starting another execution. If you omit `--event-id`, every invocation is a distinct delivery regardless of payload similarity.
+
+An emit that matches no active trigger is still a success — the CLI prints `outcome: "unmatched"` to indicate the event was recorded but nothing subscribed. This is expected behaviour during development when an agent has not been deployed or its trigger has not been activated.
+
+---
+
+## sapiom agents signal
+
+Resume one or more paused executions by delivering a named signal. A signal **only** reaches runs that are already in progress and waiting; it cannot start new executions. Delivery is matched on the `(name, correlationId)` pair, so a single `signal` call can resume multiple waiting runs at once.
+
+```bash
+sapiom agents signal <executionId> [options]
+```
+
+**Example**
+
+```bash
+sapiom agents signal exec_9kLmN3pQ \
+  --name approval.decision \
+  --correlation-id exec_9kLmN3pQ \
+  --payload '{"approved":true}'
+```
+
+### Flags
+
+<ParamField path="executionId" type="string" required>
+  The execution ID that addresses the target run. Used to route the signal, but delivery is ultimately matched on `(name, correlationId)` — so one call may resume multiple runs sharing that pair.
+</ParamField>
+
+<ParamField path="--name" type="string" required>
+  The signal name the waiting step is listening for (e.g. `approval.decision`). Must match exactly the name used in the agent's step code.
+</ParamField>
+
+<ParamField path="--correlation-id" type="string">
+  A secondary key that narrows or widens the set of runs resumed. When omitted, the execution ID alone is used. Combine with `--name` to target a specific waiting checkpoint.
+</ParamField>
+
+<ParamField path="--payload" type="string">
+  A JSON string delivered to the resumed step as the signal payload.
+</ParamField>
+
+### Reading the result
+
+The response includes a `matched` count and may include a `message` field. Always read `message` when it is present — it qualifies cases where `matched` under-reports due to a partial fanout across multiple paused runs.
+
+---
+
+## Events vs. signals
+
+<CardGroup cols={2}>
+  <Card title="emit — starts runs" icon="bolt">
+    `emit` fires an event into the event bus. It fans out to every agent that has an active trigger subscribed to that event type, potentially starting zero or more new executions. It cannot reach a run that is already in progress.
+  </Card>
+  <Card title="signal — resumes runs" icon="rotate-right">
+    `signal` resumes executions that are already paused and waiting for a specific named signal. It cannot start new executions. The two verbs operate in completely separate namespaces.
+  </Card>
+</CardGroup>
+
+---
+
+## Schedule subcommands
+
+The `agents schedule` subgroup manages recurring and one-off triggers for deployed agents. See the [schedule reference](/api/cli/schedules) for the complete command set including `preview`, `create`, `list`, `inspect`, and `cancel`.
+
+```bash
+sapiom agents schedule --help
+```

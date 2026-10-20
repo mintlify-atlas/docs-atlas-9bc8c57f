@@ -1,0 +1,226 @@
+---
+title: "Events vs Signals: Starting and Resuming Agent Runs"
+sidebarTitle: "Events vs Signals"
+description: "Events start new agent runs by matching active triggers; signals resume paused runs by matching a (name, correlationId) pair — the two namespaces never cross."
+---
+
+Sapiom has two distinct mechanisms for driving agent runs from the outside world, and they operate in completely separate namespaces: **events** start new runs, and **signals** resume paused ones. An event never wakes a paused run. A signal never starts a new run. Confusing the two is a common source of bugs — this page covers the full contract for both verbs, their grammar rules, and how to use them from every available surface.
+
+## The core distinction
+
+| You want | Verb | Effect |
+|---|---|---|
+| Start runs because something happened | `emitEvent` | Fans out to every active `event` trigger on that type (0..N new runs) |
+| Resume a run that is already paused | `signal` | Wakes every run waiting on `(name, correlationId)` (0..N resumes) |
+
+**Events start, signals resume.** This is the complete rule. The engine routes the two verbs through different subsystems that share no state with each other.
+
+## Events
+
+### Event type grammar
+
+An event `type` is machine-routed, so its grammar is strictly enforced: lowercase `[a-z0-9_]` segments joined by dots. Examples:
+
+```
+lead.created
+payment.invoice.paid
+repo.pull_request.merged
+```
+
+The `sapiom.*` namespace is reserved for platform-internal events. Attempting to emit a `sapiom.*` event from user code will be rejected.
+
+### Emitting an event with the SDK
+
+```typescript
+import { createClient, emitEvent } from "@sapiom/agent-core";
+
+const client = createClient({ apiKey: process.env.SAPIOM_API_KEY! });
+
+// Start: fans out to every active `event` trigger on `lead.created`.
+// `id` is your id for the delivery — reposting it starts nothing new.
+const receipt = await emitEvent(
+  { type: "lead.created", payload: { leadId: "l_42" }, id: "crm-evt-8f2a" },
+  client,
+);
+// receipt.outcome === "unmatched" is a success: nothing subscribes to that type yet.
+```
+
+### Idempotency via `id`
+
+The `id` field on an event emission is your stable identifier for that delivery. If you post the same `id` twice, the second delivery starts nothing new — the engine records it as a duplicate. Use a deterministic ID derived from the source event (e.g. a CRM event ID, a webhook delivery ID) so retries are safe.
+
+### What `emitEvent` returns
+
+`emitEvent` returns a receipt containing `fireIds` — trigger fire identifiers, **not** execution IDs. A single event emission can start zero, one, or many runs (one per matching active trigger). To see what executions actually started, read the receipt back via the platform API (`GET /v1/workflows/receipts/:id`).
+
+`receipt.outcome === "unmatched"` means no trigger currently subscribes to that event type. This is **not an error** — it is a normal condition during development or when a feature flag is off.
+
+### Extra payload keys and the entry schema
+
+Extra keys in the event payload reach the run's entry step input. The engine does **not** strip unknown keys by default (the `buildManifest` phase deliberately removes `additionalProperties: false` markers to keep stored schemas forward-compatible). What happens next depends on the entry step's `inputSchema`:
+
+- `z.object()` — ignores unknown keys silently
+- `z.strictObject()` — rejects unknown keys and the step fails
+- No `inputSchema` — the raw payload lands as `input` unvalidated
+
+Either way the `emitEvent` call itself succeeds — match the entry schema when you can.
+
+## Signals
+
+### Signal name
+
+A signal `name` is author-chosen and has no grammar enforcement. It only has to match what the `pause` declaration on the paused step said:
+
+```typescript
+// In the step definition:
+pause: { signal: "approval.decision", resumeStep: "finalize" }
+
+// In the signal delivery:
+signal({ name: "approval.decision", correlationId: executionId, … }, client)
+```
+
+### Delivering a signal with the SDK
+
+```typescript
+import { createClient, signal } from "@sapiom/agent-core";
+
+const client = createClient({ apiKey: process.env.SAPIOM_API_KEY! });
+
+// Resume: wakes the run(s) paused on this exact (name, correlationId) pair.
+const { matched, message } = await signal(
+  {
+    executionId,
+    name: "approval.decision",
+    correlationId: executionId,
+    payload: { approved: true },
+  },
+  client,
+);
+```
+
+### `executionId` vs `correlationId`
+
+The `signal` call takes both `executionId` (which run to address) and `correlationId` (the routing key used for matching). Delivery is matched on the `(name, correlationId)` pair — so `executionId` does not have to be the only run that resumes. Any run paused on the same `(name, correlationId)` pair will wake.
+
+`matched` counts the runs that actually resumed. In a fanout scenario this may under-report a partial delivery — read `message` whenever it is present for the authoritative explanation.
+
+### `correlationId` routing
+
+The `correlationId` you chose when calling `pauseUntilSignal` must match the `correlationId` you pass to `signal`:
+
+<Tabs>
+  <Tab title="Per-run (ctx.executionId)">
+    The default. The paused run used `ctx.executionId` as its correlation ID, so target the same value when signalling:
+
+    ```typescript
+    // When pausing (in the step's run function):
+    return pauseUntilSignal({
+      signal: "approval.decision",
+      resumeStep: "finalize",
+      correlationId: ctx.executionId, // the default
+    });
+
+    // When resuming (from outside the agent):
+    const { matched } = await signal(
+      {
+        executionId,
+        name: "approval.decision",
+        correlationId: executionId,   // same value
+        payload: { approved: true },
+      },
+      client,
+    );
+    ```
+  </Tab>
+  <Tab title="Shared business key">
+    Multiple runs paused on the same business key all resume from one signal delivery:
+
+    ```typescript
+    // When pausing:
+    return pauseUntilSignal({
+      signal: "batch.complete",
+      resumeStep: "aggregate",
+      correlationId: input.batchId, // shared key
+    });
+
+    // When resuming all runs for a batch:
+    const { matched } = await signal(
+      {
+        executionId: anyOneRunId,    // required, but not the routing key
+        name: "batch.complete",
+        correlationId: batchId,      // wakes ALL runs paused on this batchId
+        payload: { completedAt: new Date().toISOString() },
+      },
+      client,
+    );
+    // matched === number of runs that actually resumed
+    ```
+  </Tab>
+</Tabs>
+
+## Every surface side by side
+
+Both verbs are available on every interaction surface:
+
+| Surface | Start a run | Resume a paused run |
+|---|---|---|
+| SDK | `emitEvent` (`@sapiom/agent-core`) | `signal` (`@sapiom/agent-core`) |
+| CLI | `sapiom agents emit` | `sapiom agents signal` |
+| MCP | `sapiom_dev_agents_emit_event` | `sapiom_dev_agents_signal` |
+
+### CLI examples
+
+```bash
+# Start: emit an event
+sapiom agents emit lead.created --payload '{"leadId":"l_42"}' --event-id crm-evt-8f2a
+
+# Resume: deliver a signal
+sapiom agents signal approval.decision \
+  --execution-id exec_01j... \
+  --correlation-id exec_01j... \
+  --payload '{"approved":true}'
+```
+
+### MCP examples
+
+The MCP tools follow the same contract — the tool names map directly to the verb:
+
+```
+sapiom_dev_agents_emit_event   →  emitEvent
+sapiom_dev_agents_signal       →  signal
+```
+
+## Common mistakes
+
+<Accordion title="Trying to signal a run that hasn't paused yet">
+  Delivering a signal before the run reaches its `pauseUntilSignal` call means the delivery finds no waiting run and `matched` returns `0`. The signal is not buffered. Make sure the run is already paused before delivering the resume signal, or implement a polling/retry mechanism in the caller.
+</Accordion>
+
+<Accordion title="Using an event to wake a paused run">
+  Events and signals are fully separate namespaces. Emitting an event with the same name as a pause signal has no effect on paused runs — it will only start new runs on any matching triggers. Always use `signal` (not `emitEvent`) to resume a paused run.
+</Accordion>
+
+<Accordion title="Mismatching the correlationId">
+  The signal delivery matches on the pair `(name, correlationId)`. If the step paused with `correlationId: ctx.executionId` and you deliver `correlationId: someOtherId`, the `matched` count will be `0` and the run stays paused. Check both sides of the pair when debugging a resume that didn't fire.
+</Accordion>
+
+<Accordion title="sapiom.* event types">
+  Event types in the `sapiom.*` namespace are reserved for the platform. Emitting one from user code will return an error. Use the `[a-z0-9_]` segments grammar with your own domain prefix (e.g. `myapp.order.placed`).
+</Accordion>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Pausing & Signals" icon="pause" href="/guides/pausing-and-signals">
+    The full contract for pauseUntilSignal, correlationId, and timeoutMs
+  </Card>
+  <Card title="Authoring Agents" icon="pen" href="/guides/authoring-agents">
+    Build your first agent with defineAgent and defineStep
+  </Card>
+  <Card title="Step Graph" icon="diagram-project" href="/guides/step-graph">
+    Understand how pause declarations appear as typed edges in the manifest
+  </Card>
+  <Card title="Context & State" icon="database" href="/guides/context-and-shared-state">
+    Use ctx.executionId as the default correlationId in pause declarations
+  </Card>
+</CardGroup>

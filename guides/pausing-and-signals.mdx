@@ -1,0 +1,224 @@
+---
+title: "Pause Agent Steps and Resume with Signals"
+sidebarTitle: "Pausing & Signals"
+description: "Learn how pauseUntilSignal durably suspends a step at zero cost, and how to resume it from a long-running capability or a human-in-the-loop approval gate."
+---
+
+Some operations run far longer than a single step's execution budget — a coding agent working through a task, a human reviewer deciding on a contract, a webhook from an external service. Sapiom handles these through durable step suspension: `pauseUntilSignal` parks the run at zero cost, persisting the step's state across process restarts, until an external signal arrives and resumes it. The pause is not a long-lived `await` — it is a real suspend across processes, with the launch and the resume executing as two separate steps.
+
+## The `pause` declaration
+
+Before a step can call `pauseUntilSignal`, it must statically declare the pause in its `defineStep` options. This is how the build phase includes the pause edge in the agent manifest:
+
+```typescript
+const code = defineStep({
+  name: "code",
+  next: ["review"],
+  pause: { signal: "CODING_RESULT_SIGNAL", resumeStep: "review" },
+  async run(input, ctx) {
+    // ...
+  },
+});
+```
+
+Both `signal` (the signal name) and `resumeStep` (the step that receives the resumed input) must match what you pass to `pauseUntilSignal` at runtime.
+
+## Pausing on a dispatched capability
+
+Dispatched capabilities — like the coding agent — return a `DispatchHandle` whose result arrives long after the current step exits. Pass the launch handle (or the launch promise) directly to `pauseUntilSignal`:
+
+```typescript
+import { defineStep, pauseUntilSignal, terminate } from "@sapiom/agent";
+import { CODING_RESULT_SIGNAL } from "@sapiom/tools";
+
+const code = defineStep({
+  name: "code",
+  next: ["review"],
+  // Use the capability's exported signal constant so the decl can't drift from the handle.
+  pause: { signal: CODING_RESULT_SIGNAL, resumeStep: "review" },
+  async run(input, ctx) {
+    // launch returns immediately; hand it straight to pauseUntilSignal. The run
+    // parks at status='paused' and the dispatch loop exits.
+    return pauseUntilSignal(
+      ctx.sapiom.models.coding.launch({ task: input.task }),
+      {
+        resumeStep: "review",
+      },
+    );
+  },
+});
+
+const review = defineStep({
+  name: "review",
+  next: [],
+  terminal: true,
+  // Give this step an `inputSchema` (a zod schema for the capability's result
+  // shape) to type + validate what it receives.
+  async run(result, ctx) {
+    // Fires on success OR failure — branch on the terminal result.
+    return terminate({ ok: result.status === "completed" });
+  },
+});
+```
+
+<Note>
+  `CODING_RESULT_SIGNAL` is a stable string constant exported by `@sapiom/tools`. Using the exported constant in both the `pause` declaration and the `pauseUntilSignal` call ensures the two can never drift apart.
+</Note>
+
+### Awaiting the handle first
+
+When you need the handle before pausing — to stash a run ID in `ctx.shared` or to `try/catch` a launch failure — `await` the launch promise first. The resolved handle still flows into `pauseUntilSignal` correctly:
+
+```typescript
+async run(input, ctx) {
+  const run = await ctx.sapiom.models.coding.launch({ task: input.task });
+  ctx.shared.set("codingRunId", run.runId); // readable from the resumed step
+  return pauseUntilSignal(run, { resumeStep: "review" });
+},
+```
+
+### Compatible dispatched capabilities
+
+Any capability whose `launch` returns a `DispatchHandle` (containing a `dispatch` member) is pausable. Each ships a stable result-signal constant for the `pause` declaration:
+
+| Capability | Launch | Pause signal |
+|---|---|---|
+| Coding agent | `ctx.sapiom.models.coding.launch(…)` | `CODING_RESULT_SIGNAL` (`@sapiom/tools`) |
+
+<Info>
+  This list grows as new dispatched capabilities land. Check `@sapiom/tools` exports for new `*_RESULT_SIGNAL` constants.
+</Info>
+
+## Pausing for an external signal (human-in-the-loop)
+
+The same mechanism works without a capability handle. Pass the object form and name the signal yourself — any string you choose — and the run parks until something external delivers it. This is the standard pattern for human approvals and third-party callbacks:
+
+```typescript
+const present = defineStep({
+  name: "present",
+  next: ["finalize"],
+  pause: { signal: "approval.decision", resumeStep: "finalize" },
+  async run(input, ctx) {
+    await notifyReviewer(input.draft);
+    return pauseUntilSignal({
+      signal: "approval.decision",
+      resumeStep: "finalize",
+      correlationId: ctx.executionId,
+      timeoutMs: 7 * 24 * 60 * 60 * 1000,
+    });
+  },
+});
+```
+
+## `correlationId`
+
+`correlationId` is the routing key that determines **which run(s) resume** when a signal is delivered. Choosing it is the fundamental design decision for any pause:
+
+<Tabs>
+  <Tab title="ctx.executionId (default)">
+    Using `ctx.executionId` — which is also the default when you omit `correlationId` — scopes the waiter to this specific run. One delivery, one resume. Use this for per-run approvals where only the current run should wake up.
+
+    ```typescript
+    return pauseUntilSignal({
+      signal: "approval.decision",
+      resumeStep: "finalize",
+      correlationId: ctx.executionId, // one run wakes up
+      timeoutMs: 7 * 24 * 60 * 60 * 1000,
+    });
+    ```
+  </Tab>
+  <Tab title="Shared business key">
+    Using a shared business key — an order ID, a customer ID, a batch reference — causes **every** run waiting on that key to resume together from a single delivery. This is "wait for any signal matching X": the fanout is 0..N runs, and the `matched` count you get back tells you how many actually resumed.
+
+    ```typescript
+    return pauseUntilSignal({
+      signal: "batch.complete",
+      resumeStep: "aggregate",
+      correlationId: input.batchId, // all runs for this batch resume
+    });
+    ```
+  </Tab>
+</Tabs>
+
+## `timeoutMs`
+
+Give any pause that a human might never answer an explicit `timeoutMs`. When the deadline lapses the run ends as a **pause timeout** — a recorded failure — rather than waiting indefinitely:
+
+```typescript
+return pauseUntilSignal({
+  signal: "approval.decision",
+  resumeStep: "finalize",
+  correlationId: ctx.executionId,
+  timeoutMs: 7 * 24 * 60 * 60 * 1000, // 7 days
+});
+```
+
+<Warning>
+  The engine's pause deadline (`timeoutMs`) **terminates** the run when it lapses — it does not resume the step. If you want a graceful escalation path (notify someone, route to a fallback step), implement that by delivering a signal before the deadline, not by relying on `timeoutMs` to drive routing.
+</Warning>
+
+## The full `pauseUntilSignal` signature
+
+`pauseUntilSignal` accepts either a `DispatchHandle` (or its promise) for capability-driven pauses, or an explicit object for custom signal pauses:
+
+```typescript
+// Form 1: capability handle (reads signal + dispatch from the handle)
+pauseUntilSignal(handle, { resumeStep: "review" })
+
+// Form 2: explicit object (you choose the signal name)
+pauseUntilSignal({
+  signal: "approval.decision",
+  resumeStep: "finalize",
+  correlationId: ctx.executionId, // optional — defaults to ctx.executionId
+  timeoutMs: 604800000,           // optional — milliseconds
+})
+```
+
+## Behaviour under `run_local`
+
+Under `run_local` (local development), manual gates auto-resume with an empty payload `{}` — there is no way to inject a signal payload from the CLI. Type the resumed step's `inputSchema` with optional fields so local runs don't fail on the empty input:
+
+```typescript
+const finalize = defineStep({
+  name: "finalize",
+  next: [],
+  terminal: true,
+  inputSchema: z.object({
+    approved: z.boolean().optional(), // optional so run_local auto-resume works
+    comment: z.string().optional(),
+  }),
+  async run(input) {
+    return terminate({ approved: input.approved ?? false });
+  },
+});
+```
+
+## The pause as a graph edge
+
+Every `pause` declaration adds a durable edge to the step graph. The build phase includes it in the agent manifest and `validateGraph` checks that `resumeStep` references a real step. The approval-chain example shows a realistic multi-gate pattern:
+
+```
+  start → present ──(pause: approval.decision)──▶ decide
+                                                     │
+                                         ┌───────────┤───────────┐
+                                         ▼           ▼           ▼
+                                     compensate   finalize   escalate
+                                     (terminal)  (terminal)  (terminal)
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Events vs Signals" icon="bolt" href="/guides/events-vs-signals">
+    Learn how signals differ from events and when to deliver each
+  </Card>
+  <Card title="Context & State" icon="database" href="/guides/context-and-shared-state">
+    Use ctx.executionId and ctx.shared to carry state through paused runs
+  </Card>
+  <Card title="Step Graph" icon="diagram-project" href="/guides/step-graph">
+    See how pause declarations appear as typed edges in the agent manifest
+  </Card>
+  <Card title="Authoring Agents" icon="pen" href="/guides/authoring-agents">
+    Review the full defineStep and defineAgent authoring surface
+  </Card>
+</CardGroup>

@@ -1,0 +1,253 @@
+---
+title: "Agent Execution Context and ctx.shared State Store"
+sidebarTitle: "Context & State"
+description: "AgentExecutionContext gives every step access to ctx.shared for cross-step state, ctx.logger for structured logs, and a hard 256 KiB quota enforced at write time."
+---
+
+Every step's `run` function receives an `AgentExecutionContext` as its second argument — conventionally `ctx`. This context object is the controlled interface between your step code and the Sapiom runtime: it provides `ctx.shared` for passing typed state across step boundaries, `ctx.logger` for structured log emission, `ctx.executionId` to identify the current run, and `ctx.sapiom` for platform capabilities. Understanding `ctx.shared`'s quota and serialisation contract is essential for writing agents that stay within platform limits.
+
+## `AgentExecutionContext` at a glance
+
+The `AgentExecutionContext` type is exported from `@sapiom/agent`:
+
+```typescript
+import type { AgentExecutionContext } from "@sapiom/agent";
+```
+
+The properties your step code uses most:
+
+| Property | Type | Purpose |
+|---|---|---|
+| `ctx.shared` | `TypedContextStore` | Cross-step key/value state store |
+| `ctx.logger` | `StepLogger` | Structured log emission |
+| `ctx.executionId` | `string` | Unique ID for the current agent run |
+| `ctx.sapiom` | `SapiomCapabilities` | Platform capability clients |
+
+## `ctx.shared` — cross-step state
+
+`ctx.shared` is a typed key/value store whose entire snapshot persists across every step in a run, surviving pauses and process restarts. Use it to carry IDs, flags, and small scalars that multiple later steps need to read.
+
+### Writing values
+
+```typescript
+const start = defineStep({
+  name: "start",
+  next: ["process"],
+  async run(input, ctx) {
+    ctx.shared.set("jobId", input.jobId);
+    ctx.shared.set("attempt", 0);
+    return goto("process", { jobId: input.jobId });
+  },
+});
+```
+
+### Reading values
+
+```typescript
+const process = defineStep({
+  name: "process",
+  next: ["finish"],
+  async run(input, ctx) {
+    const jobId = ctx.shared.get("jobId");     // string | undefined
+    const attempt = ctx.shared.get("attempt"); // number | undefined
+    ctx.logger.info("processing", { jobId, attempt });
+    return goto("finish", { jobId });
+  },
+});
+```
+
+<Note>
+  `TypedContextStore` has no `delete()` method. To remove a value, replace it with a compact sentinel (for example `null` or `""`) that brings the snapshot back within the quota.
+</Note>
+
+## The 256 KiB quota
+
+The **entire** `ctx.shared` snapshot may contain at most **256 KiB (262,144 bytes)**, measured as the UTF-8 byte length of `JSON.stringify(snapshot)` in compact form. Every key name, JSON punctuation character, and every existing value counts toward the same ceiling — not just the value you are currently writing.
+
+`InMemoryContextStore.set()` measures the complete candidate snapshot **synchronously before committing**. An oversized write throws and leaves the previous snapshot entirely unchanged:
+
+```typescript
+import {
+  CtxSharedSizeLimitExceededError,
+  isCtxSharedSizeLimitExceededPayload,
+} from "@sapiom/agent";
+
+const step = defineStep({
+  name: "store-result",
+  next: ["summarize"],
+  canFail: true,
+  async run(input, ctx) {
+    try {
+      ctx.shared.set("largeResult", input.data);
+    } catch (err) {
+      if (isCtxSharedSizeLimitExceededPayload(err)) {
+        // Store a reference instead, not the data itself
+        ctx.logger.warn("ctx.shared quota exceeded — falling back to reference", {
+          code: err.code,
+        });
+        ctx.shared.set("largeResultRef", input.dataRef);
+      } else {
+        throw err;
+      }
+    }
+    return goto("summarize", {});
+  },
+});
+```
+
+### Quota error codes
+
+Two stable machine-readable codes are exported for matching quota failures. Use the structural guards — never parse `err.message` or rely on `instanceof` across separate SDK copies:
+
+<Accordion title="CTX_SHARED_SIZE_LIMIT_EXCEEDED">
+
+Thrown when the candidate snapshot would exceed 262,144 bytes. The exported guard is `isCtxSharedSizeLimitExceededPayload(err)` and the stable code string is available as `CTX_SHARED_QUOTA_CONTRACT`:
+
+```typescript
+import {
+  CTX_SHARED_QUOTA_CONTRACT,
+  isCtxSharedSizeLimitExceededPayload,
+} from "@sapiom/agent";
+
+// CTX_SHARED_QUOTA_CONTRACT === "CTX_SHARED_SIZE_LIMIT_EXCEEDED"
+```
+
+The error payload type `CtxSharedSizeLimitExceededPayload` carries `code`, `phase`, `candidateBytes`, and `limitBytes`.
+
+</Accordion>
+
+<Accordion title="CTX_SHARED_SERIALIZATION_FAILED">
+
+Thrown when the candidate value cannot be JSON-serialised (circular reference, `BigInt`, or a `toJSON()` that throws). The guard is `isCtxSharedSerializationErrorPayload(err)` and the stable code is `CTX_SHARED_SERIALIZATION_ERROR_CONTRACT`:
+
+```typescript
+import {
+  CTX_SHARED_SERIALIZATION_ERROR_CONTRACT,
+  isCtxSharedSerializationErrorPayload,
+} from "@sapiom/agent";
+
+// CTX_SHARED_SERIALIZATION_ERROR_CONTRACT === "CTX_SHARED_SERIALIZATION_FAILED"
+```
+
+</Accordion>
+
+### Measuring snapshot size
+
+Use `measureCtxSharedSnapshotBytes` to check the current snapshot size before attempting a large write:
+
+```typescript
+import { measureCtxSharedSnapshotBytes, MAX_SHARED_SNAPSHOT_BYTES } from "@sapiom/agent";
+
+const currentBytes = measureCtxSharedSnapshotBytes(snapshot);
+const headroom = MAX_SHARED_SNAPSHOT_BYTES - currentBytes;
+// MAX_SHARED_SNAPSHOT_BYTES === 262144
+```
+
+## What to store in `ctx.shared` vs durable storage
+
+<CardGroup cols={2}>
+  <Card title="Store in ctx.shared" icon="check">
+    - Small scalars: IDs, counts, flags, status strings
+    - References and handles to objects in durable storage
+    - Step-to-step coordination state (e.g. current approver index)
+    - Compact configuration overrides resolved at runtime
+  </Card>
+  <Card title="Store in durable storage" icon="database">
+    - Bulk API responses and raw data payloads
+    - Documents, research results, generated content
+    - Binary data or anything that serialises to more than a few KB
+    - Audit trails and long-lived records that must outlive the run
+  </Card>
+</CardGroup>
+
+The pattern is: put large data in durable storage (e.g. via `ctx.sapiom.database`), then store only the resulting reference or ID in `ctx.shared`:
+
+```typescript
+const store = defineStep({
+  name: "store",
+  next: ["analyze"],
+  async run(input, ctx) {
+    // Store the large payload in durable storage
+    const { id } = await ctx.sapiom.database.insert("results", input.rawData);
+
+    // Keep only the reference in ctx.shared
+    ctx.shared.set("resultId", id);
+
+    return goto("analyze", { resultId: id });
+  },
+});
+```
+
+## `ctx.logger` — structured log emission
+
+`ctx.logger` emits structured log events attached to the current step's execution record. The three standard levels are `info`, `warn`, and `error`:
+
+```typescript
+const step = defineStep({
+  name: "process",
+  next: ["finish"],
+  async run(input, ctx) {
+    ctx.logger.info("starting process", { jobId: input.jobId, attempt: 1 });
+
+    try {
+      const result = await doWork(input);
+      ctx.logger.info("process complete", { result: result.summary });
+      return goto("finish", { result });
+    } catch (err) {
+      ctx.logger.error("process failed", { error: String(err) });
+      throw err;
+    }
+  },
+});
+```
+
+Log entries appear in the run's step execution records in the dashboard and are queryable via the platform log API. Always pass a plain object as the second argument — the platform indexes its keys for filtering.
+
+## `ctx.executionId`
+
+`ctx.executionId` is the unique, stable string identifier for the current agent run. It is consistent across every step in the same run, including resumed steps after a pause. The most common use is as a correlation ID when pausing for an external signal:
+
+```typescript
+return pauseUntilSignal({
+  signal: "approval.decision",
+  resumeStep: "decide",
+  correlationId: ctx.executionId, // default — can be omitted
+  timeoutMs: 7 * 24 * 60 * 60 * 1000,
+});
+```
+
+See [Pausing & Signals](/guides/pausing-and-signals) for the full signal pattern.
+
+## Recovering from invalid state
+
+If an earlier version of your agent wrote a value that is too large or not JSON-compatible, replace it with a compact sentinel value that brings the snapshot within the quota:
+
+```typescript
+const repair = defineStep({
+  name: "repair",
+  next: ["continue"],
+  async run(input, ctx) {
+    // Replace an offending large value with a compact reference
+    ctx.shared.set("legacyBlob", null);
+    ctx.shared.set("legacyBlobRef", input.migratedRef);
+    return goto("continue", {});
+  },
+});
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Authoring Agents" icon="pen" href="/guides/authoring-agents">
+    See how ctx is wired into defineStep and the full agent authoring contract
+  </Card>
+  <Card title="Pausing & Signals" icon="pause" href="/guides/pausing-and-signals">
+    Use ctx.executionId as the default correlationId when pausing for a signal
+  </Card>
+  <Card title="Step Graph" icon="diagram-project" href="/guides/step-graph">
+    Understand how the graph structure that ctx lives inside is declared and validated
+  </Card>
+  <Card title="Events vs Signals" icon="bolt" href="/guides/events-vs-signals">
+    Learn how runs are started with events and resumed with signals
+  </Card>
+</CardGroup>

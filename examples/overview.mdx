@@ -1,0 +1,183 @@
+---
+title: "Sapiom SDK Examples: Runnable Agent Projects"
+sidebarTitle: "Overview"
+description: "Browse and run the Sapiom example library — from a single-step hello-agent to multi-party approval chains and parallel fan-out orchestration."
+---
+
+The Sapiom SDK ships a growing library of self-contained, runnable agent projects under `examples/` in the [sapiom/sapiom-js](https://github.com/sapiom/sapiom-js) repository. Each example is a complete TypeScript project with its own `package.json`, `tsconfig.json`, and `index.ts` — authored using `@sapiom/agent` and `@sapiom/tools`. They range from the minimal `hello-agent` smoke-test to production-grade templates such as a multi-party approval saga and a parallel fan-out orchestrator. This page covers the prerequisites, setup steps, and how to run any example against the Sapiom engine.
+
+## Prerequisites
+
+<CardGroup cols={2}>
+  <Card title="Node.js 18+" icon="node">
+    All examples require Node.js 18 or later. Check your version with `node --version`.
+  </Card>
+  <Card title="Sapiom API Key" icon="key">
+    Sign up or log in at [app.sapiom.ai](https://app.sapiom.ai/), go to **Settings**, and create an API key.
+  </Card>
+</CardGroup>
+
+## Setup
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/sapiom/sapiom-js.git
+    cd sapiom-js
+    ```
+  </Step>
+
+  <Step title="Choose an example and install dependencies">
+    Navigate into the example you want to run and install its dependencies:
+
+    ```bash
+    cd examples/hello-agent
+    npm install
+    ```
+  </Step>
+
+  <Step title="Copy and configure the environment file">
+    Each example reads secrets from a `.env` file. A shared template lives at
+    `examples/.env.example`:
+
+    ```bash
+    cp ../.env.example .env
+    ```
+
+    Open `.env` and fill in your values:
+
+    ```bash
+    SAPIOM_API_KEY=your-key-from-the-dashboard
+    SAPIOM_API_URL=https://api.sapiom.ai
+
+    # LangChain examples only — omit for all other examples
+    ANTHROPIC_API_KEY=sk-ant-your-anthropic-key-here
+
+    # axios / fetch / node-http examples only
+    DUMMY_SERVER_URL=https://x402-demo.sapiom.ai
+    ```
+
+    <Note>
+      `DUMMY_SERVER_URL` is only needed for the HTTP integration examples (`axios/`,
+      `fetch/`, `node-http/`). All agent examples in the registry need only
+      `SAPIOM_API_KEY`.
+    </Note>
+  </Step>
+
+  <Step title="Add the Sapiom developer MCP (recommended)">
+    The local MCP lets your coding agent scaffold, validate, deploy, and run agents
+    without leaving your editor:
+
+    ```bash
+    claude mcp add sapiom -- npx -y @sapiom/mcp
+    ```
+
+    Once added, the full lifecycle is available via the `sapiom_dev_*` tools:
+    `sapiom_dev_agents_check` → `sapiom_dev_agents_run_local` →
+    `sapiom_dev_agents_link` → `sapiom_dev_agents_deploy` → `sapiom_dev_agents_run`.
+  </Step>
+</Steps>
+
+## Running an example
+
+<Tabs>
+  <Tab title="With the CLI">
+    From inside an example directory (after `npm install`):
+
+    ```bash
+    # Validate the agent locally — bundle, manifest, graph shape
+    npx @sapiom/cli agents check
+
+    # Deploy to Sapiom
+    npx @sapiom/cli agents deploy
+
+    # Trigger a run with default input
+    npx @sapiom/cli agents run
+    ```
+  </Tab>
+  <Tab title="With npm scripts">
+    Most HTTP-integration examples expose two npm scripts:
+
+    ```bash
+    # Free endpoints only — no balance required
+    npm start
+
+    # All endpoints, including paid ones (requires a Sapiom balance)
+    npm run full
+    ```
+
+    Start with `npm start` — it exercises authorization tracking and usage rules
+    without spending any balance.
+  </Tab>
+  <Tab title="Local trace (no cloud spend)">
+    The developer MCP provides `run_local`, which executes the full agent graph
+    locally with all capabilities stubbed — no network calls, no billing:
+
+    ```bash
+    # From your coding agent (Claude Code, etc.)
+    # sapiom_dev_agents_run_local traces every step for free
+    ```
+
+    `run_local` is the fastest way to confirm your control flow before deploying.
+    See the [MCP servers guide](/guides/mcp-servers) for setup details.
+  </Tab>
+</Tabs>
+
+## Verifying output
+
+After running an example that deploys to the Sapiom engine, check these dashboard pages:
+
+| Dashboard page | URL | What you'll see |
+|---|---|---|
+| **Activity** | [app.sapiom.ai/activity](https://app.sapiom.ai/activity) | All transactions and runs from your agent |
+| **Agents** | [app.sapiom.ai/agents](https://app.sapiom.ai/agents) | Deployed agent definitions |
+| **Services** | [app.sapiom.ai/services](https://app.sapiom.ai/services) | Services and capabilities your agent accessed |
+
+## Available examples
+
+The registry at `examples/registry.json` is the authoritative list of template examples, each with a full manifest, step graph, and complexity rating. The three examples with dedicated deep-dive documentation pages are:
+
+<CardGroup cols={2}>
+  <Card title="Hello Agent" icon="hand-wave" href="/examples/hello-agent">
+    The minimal single-step agent — one terminal step, no capabilities. Use it to
+    confirm your MCP install and build → deploy → run path work end to end.
+  </Card>
+  <Card title="Approval Chain" icon="check-double" href="/examples/approval-chain">
+    A durable multi-party sign-off flow. Ordered approvers, `pauseUntilSignal`,
+    reminder nudges, escalation, and saga compensation if anyone rejects.
+  </Card>
+  <Card title="Fan-Out & Combine" icon="code-branch" href="/examples/fan-out-and-combine">
+    The canonical "an agent composes other agents" pattern. Splits a goal into parts,
+    runs each as a parallel child via `agents.run`, and reduces the results.
+  </Card>
+  <Card title="Full examples on GitHub" icon="github" href="https://github.com/sapiom/sapiom-js/tree/main/examples">
+    The complete library — including newsletter autopilot, autonomous PR bot,
+    NL-to-SQL endpoint, scene-to-video, and many more.
+  </Card>
+</CardGroup>
+
+### All registry templates at a glance
+
+| Example | Category | Cadence | Complexity |
+|---|---|---|---|
+| `hello-agent` | `starter` | on-demand | minimal |
+| `approval-chain` | `reliability-governance` | on-demand | simple |
+| `fan-out-and-combine` | `data-knowledge` | on-demand | moderate |
+| `autonomous-pr` | `product-engineering` | on-demand | advanced |
+| `newsletter-autopilot` | `revenue-marketing` | scheduled | advanced |
+| `eval-gate` | `product-engineering` | on-demand | advanced |
+| `research-to-microsite` | `data-knowledge` | on-demand | advanced |
+| `proposal-generator` | `revenue-marketing` | on-demand | involved |
+| `nl-db-query-endpoint` | `data-knowledge` | on-event | involved |
+| `scene-to-video` | `revenue-marketing` | on-demand | advanced |
+| `scheduled-db-insight-report` | `data-knowledge` | scheduled | advanced |
+| `fintech-exec-radar` | `data-knowledge` | scheduled | advanced |
+| `content-repurposing-pipeline` | `revenue-marketing` | scheduled | advanced |
+| `cold-outreach-engine` | `revenue-marketing` | scheduled | involved |
+| `logged-in-screenshots` | `reliability-governance` | on-demand | moderate |
+| `managed-loop-with-mcp` | `data-knowledge` | on-demand | simple |
+
+<Tip>
+  Start with `hello-agent` if you are new to Sapiom — it costs nothing to run locally
+  and confirms your toolchain works before you touch any metered capability.
+</Tip>

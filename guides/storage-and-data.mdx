@@ -1,0 +1,210 @@
+---
+title: "Storage, Databases, Memory, and File Storage in Sapiom"
+sidebarTitle: "Storage & Data"
+description: "Tenant-scoped object storage with presigned URLs, permanent Postgres databases, long-term semantic memory, and media generation with built-in file persistence — all in @sapiom/tools."
+---
+
+`@sapiom/tools` ships four storage and data capabilities that persist information beyond a single agent step: `fileStorage` for tenant-scoped object storage with presigned download URLs, `database` for permanent Postgres databases with direct connection credentials, `memory` for long-term semantic recall, and `contentGeneration` for media generation with optional built-in persistence to `fileStorage`. This page covers all four in depth.
+
+## File storage
+
+`fileStorage` is tenant-scoped object storage. Uploaded files are addressed by a `fileId`. You request a presigned download URL to share or serve content.
+
+```typescript
+import { createClient } from "@sapiom/tools";
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+
+// Get a time-limited download URL for an existing file
+const { downloadUrl } = await sapiom.fileStorage.getDownloadUrl(fileId);
+```
+
+### Content generation with automatic storage
+
+`contentGeneration.images.create` accepts an optional `storage` parameter. When present, each generated image is persisted to `fileStorage` as it returns — giving you a durable `fileId` with no extra upload call:
+
+```typescript
+const out = await sapiom.contentGeneration.images.create({
+  prompt: "a minimalist logo for a developer tools company",
+  storage: { visibility: "private" },
+});
+
+// Get a download URL for the persisted image
+const { downloadUrl } = await sapiom.fileStorage.getDownloadUrl(
+  out.images![0].fileId!
+);
+```
+
+## Databases
+
+`database` gives you permanent Postgres databases. Each database lives until you delete it, and you connect to it with any standard Postgres client using the credentials returned at creation time.
+
+### Provisioning a database
+
+```typescript
+import { database } from "@sapiom/tools";
+
+const db = await database.create({
+  handle: "analytics", // optional, stable key for later lookups
+});
+
+// Connect with any Postgres client
+const connStr = db.connection?.connectionString;
+```
+
+<Warning>
+  A Sapiom Postgres database is permanent — it lives until you delete it. It counts against your plan's database limit from `create` until `delete`. Reuse a handle you already own (`get(handle)` first) instead of creating a fresh database per run, and `delete` what you no longer need.
+</Warning>
+
+### Connection credentials
+
+```typescript
+const db = await database.create({ handle: "analytics" });
+
+// All fields are on db.connection (guard for null while still provisioning)
+db.connection?.connectionString; // ready-to-use Postgres URI
+db.connection?.host;
+db.connection?.port;
+db.connection?.username;
+db.connection?.password;
+db.connection?.databaseName;
+```
+
+<Note>
+  `connection` can be `null` while a database is still provisioning. Guard it with optional chaining (`db.connection?.connectionString`) before connecting.
+</Note>
+
+### Getting and listing databases
+
+```typescript
+// Get by id or handle
+const db = await database.get("analytics");
+
+// List all your databases (read-only)
+const all = await database.list();
+```
+
+`list()` never creates, mutates, or removes anything. Use it to discover a handle another agent already provisioned before deciding whether to reuse it.
+
+### Deleting a database
+
+```typescript
+await database.delete("analytics"); // by handle
+await database.delete(db.id);       // by id
+```
+
+### `database` is a provisioning surface
+
+`database` hands you connection credentials — it does not run SQL. Connect with the Postgres client of your choice and run your own queries:
+
+```typescript
+import { Client } from "pg";
+
+const db = await database.get("analytics");
+const pg = new Client({ connectionString: db.connection!.connectionString });
+await pg.connect();
+const result = await pg.query("SELECT COUNT(*) FROM events");
+await pg.end();
+```
+
+## Memory
+
+`memory` is tenant-scoped long-term memory — a namespace-isolated append-log with semantic, keyword, and hybrid recall. It is designed for durable agent knowledge: preferences, prior decisions, facts gathered over time.
+
+### Appending memories
+
+```typescript
+import { memory } from "@sapiom/tools";
+
+const { id } = await memory.append({
+  content: "User prefers dark mode.",
+  namespace: "user-42",
+  metadata: { source: "preference-survey", user_theme: "dark" },
+});
+```
+
+### Recalling memories
+
+```typescript
+const { results } = await memory.recall({
+  query: "ui preferences",
+  namespace: "user-42",
+  topK: 5,
+  strategy: "semantic", // "semantic" | "keyword" | "hybrid"
+});
+
+for (const r of results) {
+  console.log(r.content, r.score);
+}
+```
+
+### Filtering with metadata
+
+```typescript
+// Preferred: one namespace per user
+await memory.append({ content, namespace: `user-${userId}` });
+
+// When one recall must span subsets: shared namespace + metadata + filter
+await memory.append({
+  content,
+  namespace: "support-team",
+  metadata: { user_id: userId },
+});
+
+await memory.recall({
+  query,
+  namespace: "support-team",
+  filter: { user_id: userId },
+});
+```
+
+### Forgetting and dropping
+
+```typescript
+// Hard-delete specific memories by id (idempotent)
+await memory.forget({ ids: [id], namespace: "user-42" });
+
+// Delete an entire namespace (idempotent)
+await memory.drop("user-42");
+```
+
+### Memory limits and contract notes
+
+<Accordion title="Memory limits and contract notes">
+
+| Field | Limit |
+|---|---|
+| `content` | ≤ 32,000 characters |
+| `namespace` | 1–100 characters; letters, digits, `-`, `_` |
+| `query` | ≤ 4,096 characters |
+| `topK` | 1–50 (default 5) |
+| `metadata` keys | ≤ 20 per memory |
+| `metadata` key | ≤ 64 bytes; matches `^[a-zA-Z]\w*$` |
+| `metadata` string value | ≤ 512 characters |
+| `forget` ids | ≤ 100 per call |
+| `weight.halfLifeDays` | 1–365 (default 30) |
+
+- Memory is durable knowledge, not chat history. `recall` ranks by relevance, never by recency. Keep last-N context in your own store.
+- `append` is append-log only — it never mutates existing memories.
+- Secret-like content is rejected before anything is stored (`MemoryHttpError` status 400, code `secret_detected`).
+- `occurredAt` is optional event time, distinct from `createdAt`; it drives `weight.temporal` recall decay.
+
+</Accordion>
+
+## Full reference
+
+<Accordion title="All storage and data operations">
+
+| Namespace | Method | Description |
+|---|---|---|
+| `fileStorage` | `getDownloadUrl(fileId)` | Get a presigned download URL |
+| `contentGeneration.images` | `create({ prompt, storage? })` | Generate images, optionally persisting to fileStorage |
+| `database` | `create({ handle? })` | Provision a permanent Postgres database |
+| `database` | `get(idOrHandle)` | Get a database by id or handle |
+| `database` | `list()` | List all your databases |
+| `database` | `delete(idOrHandle)` | Delete a database |
+| `memory` | `append({ content, namespace, metadata? })` | Write a memory |
+| `memory` | `recall({ query, namespace, topK?, strategy?, filter? })` | Search a namespace by query |
+| `memory` | `forget({ ids, namespace })` | Hard-delete memories by id |
+| `memory` | `drop(namespace)` | Delete an entire namespace |
+
+</Accordion>

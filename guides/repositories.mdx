@@ -1,0 +1,167 @@
+---
+title: "Repositories: Private Git Repos for Agent Workflows"
+sidebarTitle: "Repositories"
+description: "Provision private in-network git repositories, hand them to a coding agent, and push the agent's output deterministically with pushFromSandbox — no tokens or SSH keys required."
+---
+
+The `repositories` namespace in `@sapiom/tools` gives you private, in-network git repositories authenticated through Sapiom's git gateway. You create a repository, pass it to a coding agent as `gitRepository`, and then call `pushFromSandbox` to commit and push the agent's edits — all in your own code, not inside the agent's prompt. There are no personal access tokens or SSH keys to manage; clones and pushes are authenticated through your tenant credentials.
+
+## Installation and import
+
+```bash
+npm install @sapiom/tools
+```
+
+```typescript
+import { createClient } from "@sapiom/tools";
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+
+// Ambient import inside an agent step
+import { repositories } from "@sapiom/tools";
+```
+
+## Creating a repository
+
+`repositories.create` provisions a new private repository and returns a `Repository` handle with its `cloneUrl` and credentials.
+
+```typescript
+import { repositories } from "@sapiom/tools";
+
+const repo = await repositories.create("landing-page");
+console.log(repo.cloneUrl);
+```
+
+<Note>
+  Repositories are hosted by Sapiom, not GitHub. Clones and pushes go through the Sapiom git gateway using your tenant credentials — no PATs or SSH keys required.
+</Note>
+
+## Getting and listing repositories
+
+```typescript
+// Get a single repository by name
+const repo = await repositories.get("landing-page");
+
+// List all your repositories
+const all = await repositories.list();
+for (const r of all) {
+  console.log(r.name, r.cloneUrl);
+}
+```
+
+## Using a repository with a coding agent
+
+Pass the `Repository` handle as `gitRepository` to `models.coding.run`. The coding agent clones the repo into `/workspace/<slug>` inside the sandbox and edits files to complete the task.
+
+```typescript
+import { repositories, models } from "@sapiom/tools";
+
+const repo = await repositories.create("landing-page");
+const run = await models.coding.run({
+  task: "Build a one-page marketing site in index.html.",
+  gitRepository: repo,
+});
+
+if (run.result?.success) {
+  const { sha } = await repo.pushFromSandbox(run.sandbox, {
+    message: "build: landing",
+  });
+  console.log("published at", sha);
+}
+```
+
+## Pushing from a sandbox
+
+`pushFromSandbox` commits any pending changes in the sandbox and pushes them to the repository. It works regardless of whether the agent left changes uncommitted, already committed them, or both.
+
+```typescript
+const { pushed, sha, branch } = await repo.pushFromSandbox(run.sandbox, {
+  message: "feat: health endpoint",
+});
+
+if (pushed) {
+  console.log(`pushed commit ${sha} to ${branch}`);
+} else {
+  console.log("nothing to push — working tree was already clean");
+}
+```
+
+<Warning>
+  `pushFromSandbox` requires the repository to already be checked out in the sandbox at `/workspace/<slug>`. It does not clone — it commits and pushes from the existing checkout. Running `models.coding.run` with `gitRepository: repo` sets this up automatically.
+</Warning>
+
+## Rehydrating a repository handle
+
+Use `attach` to reconstruct a `Repository` handle from values previously returned by `create`, `get`, or `list`. This is useful when passing a repository between steps or processes.
+
+```typescript
+// In a later step — rehydrate from stored values
+const repo = await repositories.attach({
+  id: storedId,
+  name: "landing-page",
+  cloneUrl: storedCloneUrl,
+});
+
+// Now push from the sandbox a prior step handed you
+await repo.pushFromSandbox(sandbox, { message: "chore: update" });
+```
+
+<Note>
+  `attach` rehydrates an existing Sapiom repository handle. It does not import external Git repositories from GitHub or other hosts.
+</Note>
+
+## Deleting a repository
+
+```typescript
+// Via the namespace
+await repositories.delete("landing-page");
+
+// Or via the handle
+await repo.delete();
+```
+
+`delete` is idempotent — it does not throw if the repository is already gone, so it's safe to call unconditionally during cleanup.
+
+## The preferred composition pattern
+
+The most reliable pattern is: have the coding agent do the open-ended work (writing and editing files), then perform exact, repeatable steps — committing, pushing, deploying — in your own code.
+
+```typescript
+import { repositories, models } from "@sapiom/tools";
+
+// Step 1: provision infrastructure
+const repo = await repositories.create("api");
+
+// Step 2: let the agent do the creative work
+const run = await models.coding.run({
+  task: "Add a /health endpoint and write a test for it.",
+  gitRepository: repo,
+});
+
+// Step 3: perform exact, repeatable actions in code
+if (run.result?.success) {
+  await repo.pushFromSandbox(run.sandbox, {
+    message: "feat: add /health endpoint",
+  });
+}
+
+// Step 4: clean up if you don't need the sandbox anymore
+await run.sandbox.destroy();
+```
+
+This pattern keeps publishing exact and repeatable instead of depending on the agent to run git correctly.
+
+## Full reference
+
+<Accordion title="All repository operations">
+
+| Method | Description |
+|---|---|
+| `repositories.create(name)` | Provision a new private repository |
+| `repositories.get(name)` | Get a repository by name |
+| `repositories.list()` | List all your repositories |
+| `repositories.attach(ref)` | Rehydrate a handle from stored values |
+| `repositories.delete(name)` | Delete a repository (idempotent) |
+| `repo.pushFromSandbox(sandbox, opts?)` | Commit and push the sandbox's working tree |
+| `repo.delete()` | Delete this repository (idempotent) |
+
+</Accordion>

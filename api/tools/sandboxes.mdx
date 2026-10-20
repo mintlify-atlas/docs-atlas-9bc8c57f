@@ -1,0 +1,274 @@
+---
+title: "sandboxes: Isolated Ephemeral Compute API Reference"
+sidebarTitle: "sandboxes"
+description: "API reference for the sandboxes namespace — create, attach, exec commands, stream output, read and write files, expose public URLs, and destroy compute."
+---
+
+The `sandboxes` namespace provides isolated, ephemeral compute environments you can provision on demand. Each sandbox runs in its own container with a clean filesystem, a configurable set of environment variables, and an optional time-to-live. You create a sandbox, write files into it, execute commands, stream output, expose ports publicly, and destroy it when you are done. This page documents every method in the namespace with its parameters, return shape, and important usage notes.
+
+## Import
+
+```typescript
+import { sandboxes } from "@sapiom/tools";
+// or with explicit client:
+import { createClient } from "@sapiom/tools";
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+// then: sapiom.sandboxes.*
+```
+
+## Quick example
+
+```typescript
+import { sandboxes } from "@sapiom/tools";
+
+const box = await sandboxes.create({ name: "build-01", tier: "small" });
+await box.writeFile("/workspace/app.py", "print('hi')");
+const { stdout } = await box.exec("python /workspace/app.py");
+await box.destroy();
+```
+
+<Warning>
+  Sandboxes are live and billed until you stop them. A sandbox keeps running — and accruing cost — until you call `destroy()` or its `ttl` elapses. Destroy it in a `finally` block, or set a short `ttl`, unless a later step still needs it.
+</Warning>
+
+---
+
+## `sandboxes.create(opts)`
+
+Provision a new sandbox. Returns a live `Sandbox` handle you use to operate the environment.
+
+<ParamField body="name" type="string">
+  Optional. A stable name for the sandbox. Use `attach(name)` to reconnect to this sandbox from another process or step without provisioning a new one.
+</ParamField>
+
+<ParamField body="tier" type="string">
+  Optional. The compute tier for the sandbox (e.g. `"small"`, `"medium"`, `"large"`). Omit to use the platform default.
+</ParamField>
+
+<ParamField body="ttl" type="number">
+  Optional. Time-to-live in seconds. The sandbox is automatically stopped after this duration. Prefer a short `ttl` over relying on manual `destroy()` to avoid runaway costs.
+</ParamField>
+
+<ParamField body="envs" type="Record<string, string>">
+  Optional. Environment variables injected into every command run inside the sandbox. The sandbox environment is empty by default — pass any secrets or config your workload needs here.
+</ParamField>
+
+### Returns: `Sandbox`
+
+A `Sandbox` instance with all the instance methods below.
+
+---
+
+## `sandboxes.attach(name)`
+
+Reconnect to an already-running sandbox by name. Returns the same `Sandbox` handle type as `create`. Use this when another process or a prior step created the sandbox and you need to operate it from a new context.
+
+<ParamField body="name" type="string" required>
+  The name passed to `sandboxes.create` when the sandbox was provisioned.
+</ParamField>
+
+<Note>
+  `attach` adopts an existing sandbox — it does not provision a new one. If no sandbox with that name is running, the call fails.
+</Note>
+
+---
+
+## `sandboxes.get(name)`
+
+Return the metadata and current `status` of a sandbox. Returns read-only info (`"running"`, `"stopped"`, etc.) — not an operable handle. Use `attach(name)` when you need to operate the sandbox.
+
+<ParamField body="name" type="string" required>
+  The sandbox name.
+</ParamField>
+
+---
+
+## `sandboxes.list()`
+
+Return metadata for all your sandboxes. Read-only — use `attach(name)` when you need to operate one.
+
+---
+
+## Instance methods (on a `Sandbox` handle)
+
+The following methods are available on a `Sandbox` object returned by `create` or `attach`.
+
+### `sandbox.exec(command)`
+
+Run a shell command and wait for it to finish. Returns `{ exitCode, stdout, stderr }`. A non-zero `exitCode` resolves normally — it does not throw.
+
+<ParamField body="command" type="string" required>
+  The shell command to run.
+</ParamField>
+
+```typescript
+const { exitCode, stdout, stderr } = await box.exec("npm run build");
+if (exitCode !== 0) {
+  console.error("Build failed:", stderr);
+}
+```
+
+<Note>
+  `exec` waits for the command to finish. For long-running commands, use `execStream` for live output, or start the process and poll it with `getProcess` / `waitForProcess`.
+</Note>
+
+---
+
+### `sandbox.execStream(command)`
+
+Start a command and stream its output in real time. Useful for long-running commands where you want to observe output as it arrives without waiting for completion.
+
+<ParamField body="command" type="string" required>
+  The shell command to run.
+</ParamField>
+
+```typescript
+for await (const chunk of box.execStream("npm install")) {
+  process.stdout.write(chunk);
+}
+```
+
+---
+
+### `sandbox.readFile(path)`
+
+Read the contents of a file from the sandbox filesystem. Returns the file content as a string.
+
+<ParamField body="path" type="string" required>
+  Absolute path inside the sandbox filesystem (e.g. `"/workspace/output.txt"`).
+</ParamField>
+
+---
+
+### `sandbox.writeFile(path, content)`
+
+Write a file into the sandbox filesystem. Sends the entire body in one JSON request. For binary or large files use `uploadFile` instead, which runs a chunked multipart upload.
+
+<ParamField body="path" type="string" required>
+  Absolute destination path inside the sandbox (e.g. `"/workspace/app.py"`).
+</ParamField>
+
+<ParamField body="content" type="string" required>
+  The text content to write.
+</ParamField>
+
+```typescript
+await box.writeFile("/workspace/config.json", JSON.stringify({ debug: true }));
+```
+
+---
+
+### `sandbox.uploadFile(path, content, opts?)`
+
+Upload a file using a chunked multipart upload (parallel parts, retries, auto-abort on failure). Accepts a `Blob`, `Uint8Array`, or string. Prefer this over `writeFile` for binary content or files large enough to hit the JSON body-size ceiling.
+
+<ParamField body="path" type="string" required>
+  Absolute destination path inside the sandbox.
+</ParamField>
+
+<ParamField body="content" type="Blob | Uint8Array | string" required>
+  The file content to upload.
+</ParamField>
+
+```typescript
+import { readFile } from "node:fs/promises";
+const bytes = await readFile("./artifact.zip");
+await box.uploadFile("/workspace/artifact.zip", bytes);
+```
+
+---
+
+### `sandbox.uploadDir(localPath, remotePath)`
+
+Upload an entire local directory into the sandbox, preserving the directory structure.
+
+<ParamField body="localPath" type="string" required>
+  The local directory path to upload.
+</ParamField>
+
+<ParamField body="remotePath" type="string" required>
+  The destination directory path inside the sandbox.
+</ParamField>
+
+---
+
+### `sandbox.createPublicUrl(port)`
+
+Expose a port inside the sandbox on a public HTTPS URL. Returns the URL. Useful for previewing a running web server or sharing an endpoint.
+
+<ParamField body="port" type="number" required>
+  The port number the process inside the sandbox is listening on.
+</ParamField>
+
+```typescript
+await box.exec("node server.js &");
+const { url } = await box.createPublicUrl(3000);
+console.log("Live at", url);
+```
+
+---
+
+### `sandbox.deployPreview()`
+
+Deploy a preview of the sandbox's web content and return its public URL. Returns a preview deployment that reflects the current state of the sandbox.
+
+---
+
+### `sandbox.getProcess(pid)`
+
+Return the current status and exit information for a process that was started inside the sandbox.
+
+<ParamField body="pid" type="string | number" required>
+  The process ID as returned when the process was started.
+</ParamField>
+
+---
+
+### `sandbox.waitForProcess(pid, opts?)`
+
+Poll until the process exits and return its final `{ exitCode, stdout, stderr }`. Use this when you start a long-running command and want to wait for it to complete in a separate step.
+
+<ParamField body="pid" type="string | number" required>
+  The process ID to wait on.
+</ParamField>
+
+---
+
+### `sandbox.destroy()`
+
+Stop and remove the sandbox. Resolves when the sandbox is gone. Call this in a `finally` block to avoid leaving billable sandboxes running.
+
+```typescript
+const box = await sandboxes.create({ name: "ci-run" });
+try {
+  await box.exec("./run-tests.sh");
+} finally {
+  await box.destroy();
+}
+```
+
+---
+
+## Working directory convention
+
+`/workspace` is the conventional working directory inside a sandbox. Other Sapiom capabilities depend on this convention — `models.coding` clones repositories into `/workspace/<slug>`, and `repositories.pushFromSandbox` expects the checkout at that path. Keep your files under `/workspace` to stay compatible.
+
+## Method summary
+
+| Method | Description |
+|---|---|
+| `sandboxes.create(opts)` | Provision a new sandbox |
+| `sandboxes.attach(name)` | Reconnect to a running sandbox by name |
+| `sandboxes.get(name)` | Read sandbox metadata and status (read-only) |
+| `sandboxes.list()` | List all your sandboxes (read-only) |
+| `sandbox.exec(cmd)` | Run a command and wait for completion |
+| `sandbox.execStream(cmd)` | Run a command and stream output live |
+| `sandbox.readFile(path)` | Read a file from the sandbox |
+| `sandbox.writeFile(path, content)` | Write a text file into the sandbox |
+| `sandbox.uploadFile(path, content)` | Chunked multipart upload (binary/large files) |
+| `sandbox.uploadDir(local, remote)` | Upload an entire directory |
+| `sandbox.createPublicUrl(port)` | Expose a sandbox port on a public HTTPS URL |
+| `sandbox.deployPreview()` | Deploy a live preview of the sandbox |
+| `sandbox.getProcess(pid)` | Check the status of a running process |
+| `sandbox.waitForProcess(pid)` | Poll until a process exits |
+| `sandbox.destroy()` | Stop and remove the sandbox |

@@ -1,0 +1,434 @@
+---
+title: "Fan-Out and Combine: Parallel Step Execution Pattern"
+sidebarTitle: "Fan-Out & Combine"
+description: "Learn the fan-out and combine pattern — parallel child agent runs via agents.run, joined with Promise.all, and reduced into one coherent answer."
+---
+
+The `fan-out-and-combine` example is the canonical "an agent composes other agents" template in the Sapiom SDK. It demonstrates how to split a goal into independent sub-problems, dispatch each as its own isolated child agent run in parallel using `ctx.sapiom.agents.run`, collect all results, and reduce them into a single coherent answer via `llm.run`. This is the durable equivalent of `Promise.all` over sub-agents: because each child is a real, independently-metered agent run (not an in-process function call), every child gets its own execution context, retry budget, and trace in the dashboard. This page explains the two-role design, the fan-out and join mechanics, the never-fail discipline, and how to adapt the pattern for your own workloads.
+
+## What this example demonstrates
+
+<CardGroup cols={2}>
+  <Card title="agents.run — launching child runs" icon="play">
+    `ctx.sapiom.agents.run` dispatches a real agent run and blocks until it reaches
+    a terminal state. Wrapping it in `Promise.all` over an array of items produces
+    a true parallel fan-out.
+  </Card>
+  <Card title="Two-role design (coordinate / leaf)" icon="sitemap">
+    One agent definition, two execution modes chosen by `mode`. The coordinator fans
+    out; each leaf does exactly one unit of work and terminates — never fanning out
+    further, which bounds recursion to a single level.
+  </Card>
+  <Card title="Never-fail discipline" icon="shield">
+    Every child dispatch is wrapped. A child that throws or ends in a non-`completed`
+    status becomes a `{ ok: false }` row. The reduce step runs over survivors; the
+    run always terminates with an honest account of what happened.
+  </Card>
+  <Card title="dryRun — plan without dispatching" icon="eye">
+    Passing `dryRun: true` returns the resolved fan-out plan — which child, how many
+    items, the exact inputs — without dispatching a single child run. Useful for
+    previewing the plan cheaply before spending on real runs.
+  </Card>
+</CardGroup>
+
+## Step graph
+
+```text
+                 ┌─ agents.run (leaf) ─┐
+plan ─▶ fanOut ──┼─ agents.run (leaf) ─┼─▶ reduce ─▶ done      (coordinate)
+                 └─ agents.run (leaf) ─┘   (llm.run) (terminal)
+
+plan ─▶ solve ─▶ (terminal)                                    (leaf)
+        (llm.run)
+
+plan ─▶ planned ─▶ (terminal)                                  (dryRun)
+```
+
+| Step | Mode | Kind | Role |
+|---|---|---|---|
+| `plan` | both | compute | Parse input, choose coordinate / leaf / dryRun path |
+| `fanOut` | coordinate | capability (`agents.run`) | Dispatch one child run per item in parallel, wait for all |
+| `reduce` | coordinate | llm | Combine children's analyses into one coherent answer |
+| `done` | coordinate | compute (terminal) | Return combined answer plus per-child status |
+| `solve` | leaf | llm (`llm.run`) | Analyse one item toward the goal and terminate |
+| `planned` | coordinate | compute (terminal) | Return fan-out plan without dispatching (dryRun) |
+
+## Full source: `fan-out-and-combine/index.ts`
+
+### Entry input schema and defaults
+
+```typescript
+import {
+  defineAgent,
+  defineStep,
+  goto,
+  terminate,
+  type AgentExecutionContext,
+} from "@sapiom/agent";
+import { z } from "zod/v4";
+
+const MAX_ITEMS = 5;
+
+const DEFAULT_GOAL =
+  "What are the main trade-offs of running background jobs on a serverless platform?";
+const DEFAULT_ITEMS = [
+  "cost and the billing model",
+  "cold starts and latency",
+  "concurrency and scaling limits",
+];
+
+const entryInput = z.object({
+  goal: z
+    .string()
+    .default(DEFAULT_GOAL)
+    .describe("What to accomplish. Split across the items on the coordinate path."),
+  items: z
+    .array(z.string())
+    .default(DEFAULT_ITEMS)
+    .describe("The sub-parts to fan out — one child run per item."),
+  childDefinition: z
+    .string()
+    .optional()
+    .describe(
+      "Slug of the deployed agent to run per item. Defaults to this agent's own slug.",
+    ),
+  mode: z
+    .enum(["coordinate", "leaf"])
+    .default("coordinate")
+    .describe(
+      'Which role this agent run plays; a "leaf" does one item and never fans out.',
+    ),
+  item: z
+    .string()
+    .optional()
+    .describe("The single item a leaf works on. Set by the coordinator on each child."),
+  dryRun: z
+    .boolean()
+    .optional()
+    .describe("Resolve and return the fan-out plan without dispatching any child runs."),
+});
+```
+
+### The plan step — routing by mode
+
+`plan` is the entry step for both the coordinator and each leaf. It reads `mode` and routes to the appropriate branch:
+
+```typescript
+const plan = defineStep({
+  name: "plan",
+  inputSchema: entryInput,
+  next: ["solve", "fanOut", "planned"],
+  async run(input, ctx) {
+    const mode = input.mode === "leaf" ? "leaf" : "coordinate";
+    const goal = input.goal?.trim() || DEFAULT_GOAL;
+    // Default to composing THIS deployment — ctx.agentName is the run's own slug
+    const childDefinition = input.childDefinition?.trim() || ctx.agentName;
+
+    ctx.shared.set("goal", goal);
+    ctx.shared.set("childDefinition", childDefinition);
+    ctx.shared.set("dryRun", input.dryRun === true);
+
+    // Leaf path: analyse one item and terminate
+    if (mode === "leaf") {
+      const item = input.item?.trim() || goal;
+      return goto("solve", { goal, item });
+    }
+
+    // Coordinate path
+    const items = normalizeItems(input.items, DEFAULT_ITEMS);
+    ctx.shared.set("itemCount", items.length);
+
+    if (input.dryRun === true) {
+      return goto("planned", { goal, childDefinition, items });
+    }
+
+    return goto("fanOut", { goal, childDefinition, items });
+  },
+});
+```
+
+### The fanOut step — parallel child dispatch
+
+`fanOut` is where the parallelism happens. `Promise.all` over `ctx.sapiom.agents.run` launches every child simultaneously and waits for all of them to reach a terminal state:
+
+```typescript
+const fanOut = defineStep({
+  name: "fanOut",
+  next: ["reduce"],
+  async run(input, ctx) {
+    const { goal, childDefinition, items } = input;
+
+    const results = await Promise.all(
+      items.map(async (item) => {
+        try {
+          const run = await ctx.sapiom.agents.run({
+            definition: childDefinition,
+            // A self-child reads `mode`; a custom child gets goal + item
+            input: { mode: "leaf", goal, item },
+          });
+          const ok = run.status === "completed";
+          return {
+            item,
+            ok,
+            status: run.status,
+            analysis: ok ? readAnalysis(run.output) : null,
+            error: ok ? null : describeChildError(run.error, run.status),
+          };
+        } catch (err) {
+          // A dispatch failure (unknown slug, transport fault) is data, not a crash
+          ctx.logger.warn("child dispatch failed", { item, childDefinition, err: String(err) });
+          return { item, ok: false, status: "error", analysis: null, error: String(err) };
+        }
+      }),
+    );
+
+    const succeeded = results.filter((r) => r.ok).length;
+    ctx.logger.info("fan-out joined", { total: results.length, succeeded });
+    return goto("reduce", { results });
+  },
+});
+```
+
+<Note>
+  `ctx.sapiom.agents.run` blocks until the child reaches a terminal state. This is
+  what makes `Promise.all` work here — each awaited call is a complete, durable child
+  run, not a fire-and-forget dispatch. The join happens when the last child resolves.
+</Note>
+
+### The solve step — the leaf's unit of work
+
+Each child runs `solve` after `plan` routes it to the leaf path. One model call, one focused result. Crucially, `solve` **never** calls `agents.run` — that is what bounds the recursion to exactly one level deep:
+
+```typescript
+const solve = defineStep({
+  name: "solve",
+  next: [],
+  terminal: true,
+  async run(input: { goal: string; item: string }, ctx) {
+    const res = await ctx.sapiom.llm.run({
+      request: {
+        system:
+          "You are one worker in a parallel team, each analysing a different facet " +
+          "of the same goal. Analyse ONLY your assigned facet, concretely and " +
+          "self-containedly, in 3-5 sentences. Do not restate the goal or the other " +
+          "facets — another step combines everyone's work.",
+        messages: [
+          {
+            role: "user",
+            content: `GOAL: ${input.goal}\n\nYOUR FACET: ${input.item}`,
+          },
+        ],
+        max_tokens: 4096,
+      },
+    });
+    const analysis = (ctx.sapiom.llm.textOf(res) ?? "").trim();
+    return terminate({ ok: true, item: input.item, analysis });
+  },
+});
+```
+
+### The reduce step — combining the results
+
+`reduce` takes the fan-out results and synthesises them into one answer via a second `llm.run` call. It handles two edge cases honestly: nothing came back with content (every child failed, or the offline stub returned empty output), and the reduce model call itself fails:
+
+```typescript
+const reduce = defineStep({
+  name: "reduce",
+  next: ["done"],
+  async run(input: { results: ChildResult[] }, ctx) {
+    const results = input.results ?? [];
+    const goal = ctx.shared.get("goal") || DEFAULT_GOAL;
+    const withAnalysis = results.filter((r) => r.ok && r.analysis);
+
+    // Nothing came back — say so, no model call needed
+    if (withAnalysis.length === 0) {
+      const combined =
+        `No child run returned analysis for "${goal}" ` +
+        `(${results.length} dispatched, ${results.filter((r) => r.ok).length} completed). ` +
+        `Offline this is expected — the child capability is stubbed.`;
+      return goto("done", { combined, results });
+    }
+
+    const parts = withAnalysis
+      .map((r, i) => `[${i + 1}] FACET: ${r.item}\n${r.analysis}`)
+      .join("\n\n");
+
+    let combined: string;
+    try {
+      const res = await ctx.sapiom.llm.run({
+        request: {
+          system:
+            "You are combining several workers' independent analyses, each covering " +
+            "a different facet of one goal, into a single coherent answer. Integrate " +
+            "them — resolve overlaps, keep the concrete detail, and note any tension " +
+            "between facets. Do not just concatenate. Output prose, no preamble.",
+          messages: [
+            {
+              role: "user",
+              content: `GOAL: ${goal}\n\nFACET ANALYSES:\n${parts}`,
+            },
+          ],
+          max_tokens: 4096,
+        },
+      });
+      combined = (ctx.sapiom.llm.textOf(res) ?? "").trim();
+      if (!combined) throw new Error("empty reduce output");
+    } catch (err) {
+      // The fan-out already succeeded — don't sink the run over a reduce failure
+      ctx.logger.warn("reduce model call failed; returning the raw facets", { err: String(err) });
+      combined = `Combined ${withAnalysis.length} facet analyses (synthesis unavailable):\n\n${parts}`;
+    }
+
+    return goto("done", { combined, results });
+  },
+});
+```
+
+### Agent definition
+
+```typescript
+export const agent = defineAgent<EntryInput, Shared>({
+  name: "fan-out-and-combine",
+  entry: "plan",
+  steps: {
+    plan,
+    solve,
+    fanOut,
+    reduce,
+    done,
+    planned,
+  },
+});
+```
+
+## The self-composing default
+
+By default, `childDefinition` is set to `ctx.agentName` — the slug of the currently running agent. This means a deployed copy of this template **dispatches leaf runs of itself** with no other deployment needed:
+
+```typescript
+const childDefinition = input.childDefinition?.trim() || ctx.agentName;
+// → "fan-out-and-combine"
+```
+
+Each child run starts at `plan` with `mode: "leaf"`, goes to `solve`, and terminates. The coordinator waits for all of them and feeds their outputs to `reduce`. The result is a complete fan-out over three parallel child runs of the same agent, with zero additional configuration.
+
+To fan out to a **different** agent, pass `childDefinition` with its deployed slug:
+
+```json
+{
+  "goal": "Analyse our Q4 sales results",
+  "items": ["EMEA region", "APAC region", "North America"],
+  "childDefinition": "your-analysis-agent-slug"
+}
+```
+
+## Running the example
+
+<Steps>
+  <Step title="Install and type-check">
+    ```bash
+    cd examples/fan-out-and-combine
+    npm install
+    npm run typecheck
+    ```
+  </Step>
+
+  <Step title="Preview the plan with dryRun (free)">
+    Run locally with `dryRun: true` to see the resolved plan — how many children,
+    what inputs — without dispatching anything:
+
+    ```bash
+    # Via the MCP: sapiom_dev_agents_run_local with input { "dryRun": true }
+    ```
+
+    Output includes:
+    ```json
+    {
+      "dispatched": false,
+      "dryRun": true,
+      "goal": "What are the main trade-offs of...",
+      "plan": {
+        "childRuns": 3,
+        "items": ["cost and the billing model", "cold starts and latency", "concurrency and scaling limits"],
+        "inputs": [
+          { "mode": "leaf", "goal": "...", "item": "cost and the billing model" },
+          ...
+        ]
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Deploy and run">
+    ```bash
+    npx @sapiom/cli agents deploy
+
+    # Run with default input — fans the sample goal into 3 parallel child runs
+    npx @sapiom/cli agents run
+
+    # Or supply your own goal and items
+    npx @sapiom/cli agents run --input '{
+      "goal": "Compare three approaches to rate-limiting an API",
+      "items": [
+        "token bucket algorithm",
+        "sliding window counter",
+        "fixed window counter"
+      ]
+    }'
+    ```
+  </Step>
+
+  <Step title="Inspect the result">
+    Navigate to [app.sapiom.ai/agents](https://app.sapiom.ai/agents), open the
+    `fan-out-and-combine` definition, and click into the run. You will see:
+
+    - A parent run executing `plan → fanOut → reduce → done`
+    - Three child runs (each `plan → solve`) launched in parallel from `fanOut`
+    - The combined answer in the terminal output of `done`
+
+    ```json
+    {
+      "coordinated": true,
+      "dispatched": true,
+      "goal": "...",
+      "combined": "The main trade-offs of running background jobs on a serverless platform span cost, latency, and scalability...",
+      "children": [
+        { "item": "cost and the billing model", "ok": true, "status": "completed" },
+        { "item": "cold starts and latency", "ok": true, "status": "completed" },
+        { "item": "concurrency and scaling limits", "ok": true, "status": "completed" }
+      ],
+      "succeeded": 3,
+      "total": 3
+    }
+    ```
+  </Step>
+</Steps>
+
+## Adapting this pattern
+
+<Accordion title="Increase the number of items">
+  The hard cap `MAX_ITEMS = 5` prevents runaway fan-outs. Raise it in the source to
+  fan out more items in a single coordinator run. Each item dispatches one child run
+  and incurs its capability costs independently.
+</Accordion>
+
+<Accordion title="Use a different child agent">
+  Pass `childDefinition` with the slug of any deployed agent. The child receives
+  `{ mode: "leaf", goal, item }` as its input — adapt the child's `inputSchema` to
+  read `item` and `goal` if it isn't a copy of this template.
+</Accordion>
+
+<Accordion title="Multi-level fan-out (with care)">
+  The single-level bound is enforced by the leaf's `solve` step never calling
+  `agents.run`. If you need a two-level hierarchy, create a separate coordinator agent
+  that fans out to coordinator children, and have each coordinator child fan out to
+  leaf children. Keep each level explicit and bounded — unbounded recursion via
+  `agents.run` is possible and undesirable.
+</Accordion>
+
+<Accordion title="Handle partial failures">
+  The `fanOut` step already captures per-item failures in the `results` array. The
+  `done` step exposes `children[].ok` and `children[].error` for each item. To alert
+  on partial failures, inspect `succeeded < total` in a downstream step or in an
+  event listener on the run's terminal output.
+</Accordion>

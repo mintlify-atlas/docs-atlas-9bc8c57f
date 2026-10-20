@@ -1,0 +1,343 @@
+---
+title: "Integrations: Email, Search, Slack, Google, and More"
+sidebarTitle: "Integrations"
+description: "Connect to email inboxes, web search, Slack workspaces, Google Drive and Gmail, GitHub repos, Linear, Notion, and routed LLM and decision capabilities — all from @sapiom/tools."
+---
+
+`@sapiom/tools` ships a family of integration capabilities that let your agents act inside third-party services: transactional email via `email`, web search and scraping via `search`, Slack workspace interactions via `connectors.slack`, Google Drive and Gmail via `connectors.google`, GitHub repository listing via `connectors.github`, Linear and Notion via MCP-backed `connectors.linear` / `connectors.notion`, and intelligent routing via `llm` and `decisions`. This page covers every integration and how to use it.
+
+## Email
+
+The `email` namespace gives you real, addressable inboxes, sending and receiving, custom domains, conversation threads, and webhooks for inbound events.
+
+### Creating an inbox and sending a message
+
+```typescript
+import { createClient } from "@sapiom/tools";
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+
+// Create an inbox
+const inbox = await sapiom.email.inboxes.create({ username: "support" });
+
+// Send from it
+await sapiom.email.messages.send(inbox.inboxId, {
+  to: "customer@example.com",
+  subject: "Welcome",
+  text: "Thanks for signing up!",
+});
+```
+
+<Note>
+  `inboxId` is the email address — it contains `@` (and often `.`). Pass it as-is; the client handles URL encoding.
+</Note>
+
+### Reading messages and replying
+
+```typescript
+// List message metadata (bodies are not included)
+const { messages } = await sapiom.email.messages.list(inbox.inboxId);
+
+// Fetch the full message (includes body, extractedText, extractedHtml)
+const full = await sapiom.email.messages.get(inbox.inboxId, messages[0].messageId);
+
+// Reply
+await sapiom.email.messages.reply(inbox.inboxId, full.messageId, {
+  text: "Happy to help!",
+});
+```
+
+### Inbound webhooks
+
+Register an HTTPS endpoint to receive inbound events. The `secret` is shown only once — store it to verify signatures.
+
+```typescript
+const hook = await sapiom.email.webhooks.create({
+  url: "https://your-app.com/webhooks/email",
+  eventType: "message.received",
+});
+// hook.secret — returned only on create; store it now
+
+// Verify incoming events
+import { createHmac, timingSafeEqual } from "node:crypto";
+import type { email } from "@sapiom/tools";
+
+function verified(rawBody: string, signature: string | undefined, secret: string): boolean {
+  if (signature === undefined) return false;
+  const expected = Buffer.from(
+    createHmac("sha256", secret).update(rawBody).digest("hex")
+  );
+  const given = Buffer.from(signature);
+  return given.length === expected.length && timingSafeEqual(given, expected);
+}
+
+const signature = req.headers["x-sapiom-signature"] as string | undefined;
+if (!verified(rawBody, signature, WEBHOOK_SECRET)) {
+  return res.status(401).end();
+}
+const event = JSON.parse(rawBody) as email.EmailEvent;
+if (event.eventType === "message.bounced" && event.bounceType === "Permanent") {
+  for (const r of event.recipients ?? []) suppress(r.address);
+}
+```
+
+### Email operations reference
+
+<Accordion title="All email operations">
+
+| Resource | Operations |
+|---|---|
+| `inboxes` | `create`, `list`, `get`, `delete` |
+| `messages` | `send`, `list`, `get`, `reply`, `replyAll`, `forward` |
+| `domains` | `create`, `verify`, `get`, `list`, `delete` |
+| `threads` | `list`, `get` |
+| `webhooks` | `create`, `list`, `get`, `delete` |
+| `metrics` | `rates` |
+
+</Accordion>
+
+## Search
+
+The `search` namespace covers web search, page reading, and professional email discovery.
+
+### Web search
+
+```typescript
+import { search } from "@sapiom/tools";
+
+// Synthesized answer + supporting results (default)
+const hits = await search.webSearch({ query: "what is an LLM agent?" });
+console.log(hits.answer);   // synthesized answer
+console.log(hits.results);  // [{ title, url, snippet }]
+
+// Link results with a deeper search
+const links = await search.webSearch({
+  query: "best practices for prompt caching",
+  intent: "links",
+  depth: "deep",
+});
+```
+
+### Scraping a page
+
+```typescript
+// Default: markdown
+const page = await search.scrape({ url: "https://example.com" });
+console.log(page.markdown);
+console.log(page.metadata.title);
+
+// Multiple formats + fresh read
+const full = await search.scrape({
+  url: "https://example.com",
+  formats: ["markdown", "html", "links"],
+  maxAge: 0, // force a fresh read
+});
+```
+
+### Professional email discovery
+
+```typescript
+// Find a person's email
+const found = await search.emailSearch.findEmail({
+  domain: "example.com",
+  firstName: "Ada",
+  lastName: "Lovelace",
+});
+console.log(found.email, found.score);
+
+// Verify deliverability
+const check = await search.emailSearch.verifyEmail({ email: "ada@example.com" });
+console.log(check.status, check.score);
+
+// Discover emails at a company domain
+const hits = await search.emailSearch.domainSearch({
+  domain: "example.com",
+  limit: 5,
+  seniority: ["executive"],
+  department: ["engineering"],
+});
+console.log(hits.emails, hits.pattern);
+```
+
+## Slack
+
+`connectors.slack` lets your agents post, edit, react to, and read messages in a tenant's connected Slack workspace. The bot token is resolved server-side — it never reaches your run.
+
+```typescript
+import { connectors } from "@sapiom/tools";
+
+// Post a message
+const { ts } = await connectors.slack.postMessage({
+  channel: "C0123456789",
+  text: "Looking into it.",
+});
+
+// Add a reaction
+await connectors.slack.addReaction({
+  channel: "C0123456789",
+  timestamp: ts!,
+  name: "eyes",
+});
+
+// Edit the message
+await connectors.slack.update({
+  channel: "C0123456789",
+  ts: ts!,
+  text: "Done! Here's the report: …",
+});
+
+// Read a thread
+const { messages } = await connectors.slack.replies({
+  channel: "C0123456789",
+  ts: ts!,
+});
+```
+
+### Slack operations
+
+<Accordion title="All Slack operations">
+
+| Method | Slack API | Key args |
+|---|---|---|
+| `postMessage(args)` | `chat.postMessage` | `channel`, `text?`, `blocks?`, `threadTs?` |
+| `update(args)` | `chat.update` | `channel`, `ts`, `text?`, `blocks?` |
+| `postEphemeral(args)` | `chat.postEphemeral` | `channel`, `user`, `text?`, `blocks?`, `threadTs?` |
+| `addReaction(args)` | `reactions.add` | `channel`, `timestamp`, `name` |
+| `removeReaction(args)` | `reactions.remove` | `channel`, `timestamp`, `name` |
+| `replies(args)` | `conversations.replies` | `channel`, `ts`, `cursor?`, `limit?` |
+| `userInfo(args)` | `users.info` | `user` |
+
+</Accordion>
+
+<Note>
+  An unconnected tenant gets a `404 connector_not_found`. The tenant must connect their Slack workspace first.
+</Note>
+
+## Google
+
+`connectors.google` lets your agents act as a tenant inside Google — Drive, Gmail, and any Google API — through a proxy that resolves the OAuth token server-side. The token never enters your run; only results do.
+
+```typescript
+import { connectors } from "@sapiom/tools";
+
+// Share a Drive file
+await connectors.google.drive.shareFile({
+  fileId: "1AbC…",
+  role: "reader",
+  type: "anyone",
+});
+
+// Send an email via Gmail
+await connectors.google.gmail.sendEmail({
+  to: "person@example.com",
+  subject: "Hello from my agent",
+  text: "Sent by my agent, as the tenant.",
+});
+
+// Use the vendor SDK through the proxy
+import { drive } from "@googleapis/drive";
+
+const files = await drive({
+  version: "v3",
+  auth: await connectors.google.authClient(),
+}).files.list({ pageSize: 10 });
+
+// Hit any Google endpoint with the generic proxy
+const res = await connectors.google.fetch(
+  "https://sheets.googleapis.com/v4/spreadsheets/ID"
+);
+```
+
+## GitHub
+
+`connectors.github` lists a tenant's GitHub repositories. The personal access token is injected server-side.
+
+```typescript
+import { connectors } from "@sapiom/tools";
+
+const repos = await connectors.github.listRepos({ perPage: 20 });
+for (const r of repos) {
+  console.log(r.fullName, r.private ? "(private)" : "");
+}
+```
+
+## Linear and Notion (MCP connectors)
+
+`connectors.linear` and `connectors.notion` are MCP-backed connectors. Call `listTools` to discover available tools and `callTool` to invoke them. The tenant's credential is resolved server-side.
+
+```typescript
+import { connectors } from "@sapiom/tools";
+
+// List available Linear tools
+const tools = await connectors.linear.listTools();
+
+// Call a tool
+const result = await connectors.linear.callTool("list_issues", { limit: 5 });
+if (result.isError) {
+  throw new Error(result.content.map((c) => c.text).join("\n"));
+}
+
+// Notion works the same way
+const pages = await connectors.notion.callTool("search", { query: "OKRs" });
+```
+
+For a renamed connector, a second connector, or a custom MCP server, use `connectors.mcp(slug)`:
+
+```typescript
+const connector = connectors.mcp("linear-2");
+const result = await connector.callTool("list_projects", {});
+```
+
+## LLM routing
+
+`llm.run` makes routed LLM calls through Sapiom's gateway. Use it for text generation and structured output when you need a direct model response.
+
+```typescript
+import { llm } from "@sapiom/tools";
+
+const result = await llm.run({
+  messages: [{ role: "user", content: "Summarize this PR in one sentence." }],
+  model: "medium",
+});
+console.log(result.content);
+```
+
+## Decisions
+
+`decisions.evaluate` is for classification, routing, and judgment — when the answer is one of a fixed set you can name up front. It returns calibrated probabilities over those answers, with no schema parsing or text generation, and the `answers` map is typed by the questions you pass.
+
+```typescript
+import { decisions } from "@sapiom/tools";
+
+const res = await decisions.evaluate({
+  state: { message: ticket.body },
+  questions: {
+    urgent: { type: "noul", instructions: "Is this urgent?" },
+    team: {
+      type: "choice",
+      instructions: "Which team should handle `message`?",
+      criteria: {
+        shipping: "Delivery issues",
+        billing: "Charges and refunds",
+        other: null,
+      },
+    },
+  },
+});
+
+if (res.answers.urgent.noul > 0.8) {
+  escalate(res.answers.team.choice);
+}
+```
+
+<Tip>
+  Ask every independent question over the same `state` in one `decisions.evaluate` call — they are evaluated in parallel. Keep arithmetic and date math in code. `decisions.evaluate` judges; it does not compute.
+</Tip>
+
+### `llm.run` vs `decisions.evaluate`
+
+| | `llm.run` | `decisions.evaluate` |
+|---|---|---|
+| **Output** | Generated text or structured schema | Calibrated probabilities over a fixed answer set |
+| **Use when** | You need a text response or shaped output | The answer is one of a named set (yes/no, pick-one label, rubric level) |
+| **Parsing** | You handle schema parsing / refusals | No parsing — result is typed probabilities |
+| **Parallel questions** | One prompt at a time | All questions evaluated in one call, in parallel |

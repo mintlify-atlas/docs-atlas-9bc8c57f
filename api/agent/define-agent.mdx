@@ -1,0 +1,231 @@
+---
+title: "defineAgent: Register a Sapiom Agent Definition"
+sidebarTitle: "defineAgent"
+description: "Factory that validates an agent's name, entry step, and steps map, attaches a non-enumerable brand symbol, and returns a typed AgentDefinition ready for the build phase."
+---
+
+`defineAgent` is the top-level factory every Sapiom agent module exports. It takes an `AgentDefinition` object — a name, an entry step name, a steps map, and an optional agent-level input schema — validates the shape at module load time, attaches a non-enumerable brand symbol so the build tooling can detect it after bundling and dynamic import, and returns the same object fully typed. Steps inside the definition remain type-erased over their routing generics, which is what allows a single `steps` map to hold heterogeneous steps.
+
+## Function Signature
+
+```typescript
+function defineAgent<
+  TInput = unknown,
+  TShared extends Record<string, unknown> = Record<string, unknown>
+>(def: AgentDefinition<TInput, TShared>): AgentDefinition<TInput, TShared>
+```
+
+`TInput` and `TShared` are almost always inferred rather than explicitly supplied. When you provide `inputSchema`, `TInput` is inferred from it. When your step `run` functions annotate `ctx: AgentExecutionContext<MyShared>`, `TShared` is inferred from those annotations.
+
+## `AgentDefinition` Type
+
+```typescript
+interface AgentDefinition<
+  TInput = unknown,
+  TShared extends Record<string, unknown> = Record<string, unknown>
+> {
+  readonly name: string;
+  readonly description?: string;
+  readonly entry: string;
+  readonly inputSchema?: ZodType<TInput>;
+  readonly steps: Readonly<Record<string, StepDefinition<TShared>>>;
+  readonly __inputType?: TInput; // phantom — never assigned at runtime
+}
+```
+
+### Parameters
+
+<ParamField path="name" type="string" required>
+  The agent's unique slug. Used as the routing key in the manifest and displayed in the dashboard. Must be non-empty — `defineAgent` throws an `Error` synchronously if this is omitted or blank.
+</ParamField>
+
+<ParamField path="entry" type="string" required>
+  The name of the step that runs first when the agent is triggered. Must be a key in `steps` — `defineAgent` throws `UnknownStepError` if the entry step is missing.
+</ParamField>
+
+<ParamField path="steps" type="Readonly<Record<string, StepDefinition>>" required>
+  A map from step name to `StepDefinition`. Every key must match the `name` property of the corresponding `StepDefinition` — `defineAgent` throws if they disagree. Null or undefined step values also throw.
+</ParamField>
+
+<ParamField path="description" type="string">
+  Human-authored one-liner for the canvas Overview panel. Deterministic, no LLM needed; displayed as-is in the dashboard.
+</ParamField>
+
+<ParamField path="inputSchema" type="ZodType<TInput>">
+  Agent-level input schema declared once rather than on the entry step directly. When the entry step declares no `inputSchema`, `defineAgent` copies this schema onto the entry step at definition time — downstream consumers (`buildManifest`, `workflowInputContract`, the dashboard's Run form) all read `steps[entry].inputSchema` without any special-casing. Declaring a *different* schema at the agent level and on the entry step simultaneously throws a build error; declaring the identical schema object in both places is allowed.
+</ParamField>
+
+## Complete Usage Example
+
+```typescript
+import { defineAgent, defineStep, goto, terminate, fail } from "@sapiom/agent";
+import { z } from "zod/v4";
+
+// 1. Define the shared state shape
+interface CycleShared {
+  summaryId: string;
+  companySlug: string;
+}
+
+// 2. Define the steps
+const gather = defineStep({
+  name: "gather",
+  next: ["summarize"],
+  canFail: true,
+  inputSchema: z.object({
+    companyId: z.number().int().positive(),
+  }),
+  async run(input, ctx: AgentExecutionContext<CycleShared>) {
+    const data = await fetchCompanyData(input.companyId);
+    if (!data) return fail("Company not found");
+    ctx.shared.set("companySlug", data.slug);
+    return goto("summarize", { rawData: data });
+  },
+});
+
+const summarize = defineStep({
+  name: "summarize",
+  next: [],
+  terminal: true,
+  async run(input, ctx: AgentExecutionContext<CycleShared>) {
+    const id = await storeSummary(input.rawData);
+    ctx.shared.set("summaryId", id);
+    return terminate({ summaryId: id });
+  },
+});
+
+// 3. Define the agent — TInput and TShared are inferred
+export const cycleAgent = defineAgent<{ companyId: number }, CycleShared>({
+  name: "cycle",
+  description: "Gather and summarize a company's Sapiom data",
+  entry: "gather",
+  steps: { gather, summarize },
+});
+```
+
+### Agent-Level Input Schema (Alternative)
+
+If you prefer a single schema declaration at the agent level, omit `inputSchema` from the entry step and place it on `defineAgent` instead:
+
+```typescript
+import { defineAgent, defineStep, terminate } from "@sapiom/agent";
+import { z } from "zod/v4";
+
+const scan = defineStep({
+  name: "scan",
+  next: [],
+  terminal: true,
+  // No inputSchema here — the agent-level schema is folded in by defineAgent
+  async run(input, ctx) {
+    return terminate({ scanned: input.repo });
+  },
+});
+
+export const scanAgent = defineAgent({
+  name: "scan",
+  entry: "scan",
+  // inputSchema is declared once, at the agent level
+  inputSchema: z.object({
+    repo: z.string().default("sapiom/sapiom"),
+  }),
+  steps: { scan },
+});
+```
+
+## Validations Performed at Definition Time
+
+<Steps>
+  <Step title="Non-empty name">
+    Throws `Error('Agent definition must have a non-empty name')` if `name` is falsy.
+  </Step>
+  <Step title="Non-empty entry">
+    Throws `Error("Agent 'X' must declare an entry step")` if `entry` is falsy.
+  </Step>
+  <Step title="Entry step exists">
+    Throws `UnknownStepError` if `steps[entry]` is `undefined`.
+  </Step>
+  <Step title="No null steps">
+    Throws `Error("Agent 'X' has null/undefined step at key 'Y'")` for any falsy step value.
+  </Step>
+  <Step title="Key/name consistency">
+    Throws `Error("step name mismatch at key 'Y'")` if `step.name !== key`.
+  </Step>
+  <Step title="No conflicting inputSchema">
+    Throws if both the agent and its entry step declare *different* `inputSchema` objects. Same object reference in both places is allowed.
+  </Step>
+</Steps>
+
+## Brand Symbol and Guard
+
+`defineAgent` attaches `AGENT_DEFINITION_BRAND` as a non-enumerable property with value `1`, so the brand survives esbuild bundling, dynamic import, and `JSON.stringify` without polluting iteration.
+
+```typescript
+import {
+  isAgentDefinition,
+  AGENT_DEFINITION_BRAND,
+} from "@sapiom/agent";
+
+// Detect agent definitions among a module's exports after dynamic import
+const mod = await import(bundleUrl);
+const defs = Object.values(mod).filter(isAgentDefinition);
+// defs: AgentDefinition[]
+
+// Direct symbol check (equivalent, but isAgentDefinition is preferred)
+console.log((cycleAgent as any)[AGENT_DEFINITION_BRAND]); // 1
+```
+
+<Warning>
+Use `isAgentDefinition(val)` rather than duck-typing on `name`, `entry`, or `steps`. Those keys are also valid on plain data objects and will produce false positives.
+</Warning>
+
+## Legacy Brand Guard
+
+Projects that were authored against the pre-rename `@sapiom/orchestration` package carry `LEGACY_ORCHESTRATION_DEFINITION_BRAND` instead. The definition shape is identical; `isLegacyOrchestrationDefinition` lets tooling accept both brands.
+
+```typescript
+import {
+  isAgentDefinition,
+  isLegacyOrchestrationDefinition,
+} from "@sapiom/agent";
+
+function isAnyDefinition(val: unknown) {
+  return isAgentDefinition(val) || isLegacyOrchestrationDefinition(val);
+}
+```
+
+## `TShared` and `AgentExecutionContext`
+
+The `TShared` generic flows from the agent definition into `ctx.shared` inside every step's `run`. You can declare the shape with a TypeScript interface and annotate `ctx` explicitly in each step:
+
+```typescript
+interface MyShared {
+  jobId: string;
+  attempts: number;
+}
+
+const step = defineStep({
+  name: "process",
+  next: [],
+  terminal: true,
+  async run(input, ctx: AgentExecutionContext<MyShared>) {
+    const jobId = ctx.shared.get("jobId"); // typed: string | undefined
+    ctx.shared.set("attempts", (ctx.shared.get("attempts") ?? 0) + 1); // typed: number
+    return terminate({ jobId });
+  },
+});
+```
+
+<Note>
+`TInput` on `AgentDefinition` is a phantom type — it has no structural home in the `steps` map (which is type-erased) and is only used so `runner.run(def, input)` can infer the correct input type at the call site. The `__inputType` field that anchors it is never assigned or read at runtime.
+</Note>
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="defineStep" href="/api/agent/define-step" icon="function">
+    How to declare transitions, inputSchema, and the run function inside each step.
+  </Card>
+  <Card title="Directives" href="/api/agent/directives" icon="arrow-right">
+    `goto`, `terminate`, `fail`, `retry`, `pauseUntilSignal` — what a step's `run()` returns.
+  </Card>
+</CardGroup>

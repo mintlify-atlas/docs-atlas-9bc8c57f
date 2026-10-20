@@ -1,0 +1,224 @@
+---
+title: "sapiom-dev MCP Tools: Full Reference for Agent Authoring"
+sidebarTitle: "Tools"
+description: "Every sapiom-dev MCP tool documented: auth, agent lifecycle, scheduling, sandbox preview, App Links, and the agent map with network requirements."
+---
+
+`sapiom-dev` exposes a structured set of MCP tools organised around the developer workflow: authenticate, scaffold an agent, iterate locally, link and deploy to the cloud, run and inspect executions, manage triggers, and publish web apps. This page documents every tool, its network requirements, and the intended usage patterns. For installation and configuration, see the [sapiom-dev overview](/api/mcp/overview).
+
+## Which server to use
+
+Two MCP servers carry the Sapiom name. Conflating them is the most common source of confusion:
+
+| | **Remote `sapiom`** | **Local `sapiom-dev`** |
+| --- | --- | --- |
+| What it is | Production **capability surface** | Local **developer** surface |
+| Package | Hosted connector (no install) | `@sapiom/mcp` (`npx -y @sapiom/mcp`) |
+| Transport | Remote / hosted | stdio — runs on your machine |
+| Tools | `sapiom_sandbox_*`, scrape, web search, content generation, storage, and more | Agent lifecycle, scheduling, sandbox preview, App Links — full list below |
+| Cost | Paid — capability calls are metered (x402) | Unmetered — the surface itself makes no paid capability calls |
+| Use when… | You want to **call** a capability right now | You want to **build or operate** agents and apps |
+
+---
+
+## Typical workflow loop
+
+The canonical path from idea to production:
+
+<Steps>
+  <Step title="scaffold">
+    Call `sapiom_dev_agents_scaffold` with a project name. The tool creates a directory with a `sapiom.json` manifest, a starter step file, and a configured `package.json`.
+  </Step>
+  <Step title="Write step code">
+    Edit the generated step files. Use `ctx.sapiom.*` (from `@sapiom/tools`) for capability calls such as sandboxes, storage, and web scrape.
+  </Step>
+  <Step title="check">
+    Call `sapiom_dev_agents_check`. The tool typechecks, imports, bundles, and validates the step graph — all locally, no authentication needed.
+  </Step>
+  <Step title="run_local">
+    Call `sapiom_dev_agents_run_local` to execute the agent locally. All `ctx.sapiom.*` calls are replaced by stubs so no Sapiom capability spend occurs. Iterate until green.
+  </Step>
+  <Step title="link">
+    Call `sapiom_dev_agents_link` to resolve or create the hosted orchestration and cache its ID locally. Requires authentication.
+  </Step>
+  <Step title="deploy">
+    Call `sapiom_dev_agents_deploy` to bundle the current source, build in the cloud, and wait for the build to complete.
+  </Step>
+  <Step title="run">
+    Call `sapiom_dev_agents_run` to start a real cloud execution.
+  </Step>
+  <Step title="inspect">
+    Call `sapiom_dev_agents_inspect` to check the execution's status, steps, and output. Pass `wait: true` to poll until completion.
+  </Step>
+</Steps>
+
+---
+
+## Authentication tools
+
+These tools manage your relationship with Sapiom and are intentionally unprefixed — they act on your identity and credentials, not on any agent being built.
+
+| Tool | Network | What it does |
+| --- | --- | --- |
+| `sapiom_authenticate` | browser | Open a browser login flow and cache the resulting API key in `~/.sapiom/credentials.json` for the current environment |
+| `sapiom_status` | — | Report who you are currently authenticated as, which environment is targeted, and whether credentials are present |
+| `sapiom_logout` | — | Clear cached credentials for the current environment from `~/.sapiom/credentials.json` |
+| `sapiom_send_feedback` | ✓ | Relay product feedback (bugs, rough edges, feature requests) to the Sapiom team. The server attaches version, platform, and environment metadata automatically |
+
+<Note>
+  `sapiom_status` and `sapiom_logout` make no network calls — they operate entirely on the local credentials file. `sapiom_authenticate` opens a browser but does not make agent API calls.
+</Note>
+
+---
+
+## Agent lifecycle tools
+
+These tools drive the scaffold → iterate → deploy → operate loop. Tools marked "author code only" execute local code with no Sapiom cloud calls; tools marked ✓ contact Sapiom cloud and require authentication.
+
+| Tool | Network | What it does |
+| --- | --- | --- |
+| `sapiom_dev_agents_scaffold` | npm optional | Create a new agent project; may query npm for current dependency versions |
+| `sapiom_dev_agents_check` | author code only | Typecheck, import, bundle, and validate the definition and step graph |
+| `sapiom_dev_agents_run_local` | author code only | Run locally with `ctx.sapiom.*` calls stubbed — no Sapiom capability spend |
+| `sapiom_dev_agents_link` | ✓ | Resolve or create the hosted orchestration and cache its ID locally |
+| `sapiom_dev_agents_clone` | ✓ | Fork a gallery template (or re-clone an existing fork) into a local project |
+| `sapiom_dev_agents_deploy` | ✓ | Bundle current local source, build in the cloud, and wait for completion |
+| `sapiom_dev_agents_run` | ✓ | Start a real cloud execution |
+| `sapiom_dev_agents_inspect` | ✓ | Inspect an execution or build; pass `wait: true` to poll until a terminal state |
+| `sapiom_dev_agents_signal` | ✓ | Resume a paused execution by delivering a named signal |
+| `sapiom_dev_agents_emit_event` | ✓ | Emit a custom event — starts one new run per active `event` trigger on that type (0..N) |
+
+### run_local vs. run
+
+<CardGroup cols={2}>
+  <Card title="run_local — offline, free" icon="laptop">
+    Executes your step code on your machine with all `ctx.sapiom.*` capability calls replaced by stubs. No authentication, no cloud calls, no metered spend. Use this to iterate quickly and catch logic errors before deploying.
+  </Card>
+  <Card title="run — cloud, real capabilities" icon="cloud">
+    Starts a real execution in Sapiom cloud. Capability calls (`ctx.sapiom.*`) are routed through the gateway and may be metered. Requires authentication and a deployed agent.
+  </Card>
+</CardGroup>
+
+---
+
+## Scheduling and trigger tools
+
+These tools create and manage triggers of any kind — cron, one-off, event, and webhook — on deployed agents.
+
+| Tool | Network | What it does |
+| --- | --- | --- |
+| `sapiom_dev_agents_schedule` | ✓ | Create a trigger: cron (recurring), one-off (`--at`), event (`eventType`), or webhook (URL + secret) |
+| `sapiom_dev_agents_schedule_inspect` | ✓ | Inspect a single trigger with fire history, or list all triggers for an agent |
+| `sapiom_dev_agents_schedule_cancel` | ✓ | Cancel a trigger of any kind — stops all future fires permanently |
+| `sapiom_dev_agents_schedule_secret` | ✓ | Rotate, complete-rotate, or revoke a webhook trigger's signing secret |
+| `sapiom_dev_agents_cron_preview` | ✓ | Validate a cron expression and preview its next occurrences |
+
+<Tip>
+  Use `sapiom_dev_agents_cron_preview` to validate a cron expression and confirm its next fire times before calling `sapiom_dev_agents_schedule`. This avoids creating a misconfigured trigger you'd have to cancel.
+</Tip>
+
+---
+
+## Sandbox and App Link tools
+
+These tools let you publish a web app behind a live URL — either a temporary sandbox URL for development iteration, or a durable App Link for sharing.
+
+| Tool | Network | What it does |
+| --- | --- | --- |
+| `sapiom_dev_sandbox_configure` | — | Write a validated `type: "sandbox"` preview resource into `sapiom.json` |
+| `sapiom_dev_sandbox_check` | — | Validate the project's sandbox resources without deploying |
+| `sapiom_dev_sandbox_preview` | ✓ | Deploy the app to a sandbox and return a live URL that expires with its `ttl` |
+| `sapiom_dev_app_publish` | ✓ | Publish the app to a durable App Link at `https://apps.sapiom.ai/{org}/{slug}` |
+| `sapiom_dev_app_list` | ✓ | List the org's App Links — URL, visibility, webhooks status, spend cap, wake state |
+| `sapiom_dev_app_settings` | ✓ | Change a link's `webhooksEnabled`, visibility, spend cap, or wake rate limit |
+| `sapiom_dev_app_delete` | ✓ | Delete an App Link (URL stops resolving, slug freed); `confirm: true` is required |
+
+### Sandbox vs. App Link workflow
+
+```text
+sandbox_configure
+      ↓
+sandbox_preview   ← iterate here; each preview gets a throwaway URL
+      ↓
+  (ready to share)
+      ↓
+  app_publish     ← permanent durable URL at apps.sapiom.ai/{org}/{slug}
+      ↓
+app_list / app_settings / app_delete
+```
+
+`app_publish` reads the same `sapiom.json` sandbox resource as `sandbox_preview`. It uploads the source as a stored text-only bundle (≤ 10 MiB) and returns a durable URL. Re-publishing the same slug updates the app in place.
+
+### App Link webhooks
+
+Webhooks are **off by default**. Enable them with `app_settings`:
+
+```json
+{ "slug": "my-app", "webhooksEnabled": true }
+```
+
+Once enabled, third parties POST to `https://apps.sapiom.ai/{org}/{slug}/hook/<path>`. The `/hook` prefix is stripped and the body forwarded byte-exact, so Slack, Stripe, and GitHub signature checks run inside the app without modification.
+
+<Warning>
+  `app_settings` requires the `org.write` permission — publish authority alone is not sufficient. If the tool call is refused, the response will name the missing permission and the affected fields.
+</Warning>
+
+---
+
+## Agent map
+
+`sapiom_dev_map` returns the same map that Agent Studio draws, computed fresh from code on every call. Nothing about agents or edges is persisted between calls.
+
+| Tool | Network | What it does |
+| --- | --- | --- |
+| `sapiom_dev_map` | optional | Compute the agent map: systems, agents, steps, and code-proven edges between them |
+
+### Scanning a project
+
+Pass a project folder and optionally a git ref to draw a specific version:
+
+```json
+{ "root": "~/agents/support-desk", "ref": "HEAD" }
+```
+
+The scan finds every folder containing a `sapiom.json` or a `defineAgent` call and reads:
+
+- **Edges** (agent-to-agent) with the file and line that proves each one: `agents.run` / `agents.launch` (launch edges), `schedules.create` on another agent (timer edges), and `events.emit` matched to agents whose triggers subscribe to that event type (event edges).
+- **Systems** — connected components over those edges. Agents that only share a vault key, database, or connector are not joined; the shared resource appears in each agent's `shared` list.
+- **Steps** from `agents check` (requires the agent's dependencies to be installed locally).
+- **Triggers and deploy state** from the signed-in account, plus a `fleet.json`'s declared triggers. When signed out, `platform` says so and the map still draws.
+- **`changedSinceRef`** — whether the agent's folder differs from the specified `ref`.
+
+### Describing agents manually
+
+To map agents without scanning a codebase, pass an `agents` array directly:
+
+```json
+{
+  "agents": [
+    { "slug": "intake", "emits": [{ "eventType": "ticket.opened" }] },
+    {
+      "slug": "triage",
+      "triggers": [{ "kind": "event", "eventType": "ticket.opened" }],
+      "calls": [{ "to": "notify", "kind": "launch" }]
+    },
+    { "slug": "notify", "resources": ["connector:slack"] }
+  ]
+}
+```
+
+Each agent entry accepts: `slug`, `path`, `description`, `deployed`, `steps`, `calls`, `emits`, `triggers`, and `resources`.
+
+### Edge labels
+
+When signed in, the map tool uses Jev (`jev-1.13.0`) to label each edge (e.g. "hands work to", "feeds data to", "monitors"). A label is shown only when its confidence probability `p ≥ 0.8`. Labels are cached in `<root>/.sapiom/cache/map-labels.json` keyed by a hash of the question's facts — an unchanged agent is never re-asked and its label never flips. When signed out, Jev is unavailable, or Jev takes over 5 seconds, the map returns `labels: "unavailable"` and is otherwise complete.
+
+### Naming systems
+
+Name a connected component of agents by adding a `.sapiom/map.json` file in the project root:
+
+```json
+{ "systems": [{ "agent": "intake", "name": "Support desk" }] }
+```
+
+This name appears in the map and in Agent Studio's visualisation.

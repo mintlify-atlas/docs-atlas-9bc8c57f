@@ -1,0 +1,213 @@
+---
+title: "Install Sapiom SDK Packages for Your Project"
+sidebarTitle: "Installation"
+description: "Install @sapiom/agent, @sapiom/tools, @sapiom/cli, and @sapiom/mcp — with Node 18+ prerequisites, package descriptions, and SAPIOM_API_KEY setup."
+---
+
+The Sapiom SDK is a monorepo of focused packages published to npm under the `@sapiom` scope. You install only what your project needs — a standalone script calling capabilities only needs `@sapiom/tools`, while a full agent authoring project typically adds `@sapiom/agent` and either `@sapiom/cli` or `@sapiom/mcp`. This page covers prerequisites, install commands for every package, and how to configure your API key.
+
+## Prerequisites
+
+- **Node.js 18 or later.** All packages require Node 18+. Check your version with `node --version`.
+- **A package manager.** npm, pnpm, and yarn are all supported. The monorepo itself uses pnpm workspaces, but your project can use any manager.
+- **A Sapiom API key** for deploy, cloud-run, and any capability call that hits the Sapiom platform. Local scaffolding and `agents check` work without one. See [API Key setup](#api-key-setup) below.
+
+## Install packages
+
+### @sapiom/agent — agent authoring contract
+
+The authoring contract for defining agents. Provides `defineAgent`, `defineStep`, directives (`goto`, `terminate`, `pauseUntilSignal`, `fail`, `retry`), execution context types, and the manifest builder. This is the package your agent definition files import from.
+
+<CodeGroup>
+```bash npm
+npm install @sapiom/agent
+```
+```bash pnpm
+pnpm add @sapiom/agent
+```
+```bash yarn
+yarn add @sapiom/agent
+```
+</CodeGroup>
+
+### @sapiom/tools — capability client
+
+The typed client for every Sapiom capability — sandboxes, git repositories, coding agents, LLM routing, search, file storage, email, databases, memory, content generation, decisions, and more. Use it directly in your own code, or access it through `ctx.sapiom` inside an agent step.
+
+<CodeGroup>
+```bash npm
+npm install @sapiom/tools
+```
+```bash pnpm
+pnpm add @sapiom/tools
+```
+```bash yarn
+yarn add @sapiom/tools
+```
+</CodeGroup>
+
+### @sapiom/cli — command line interface
+
+The Sapiom CLI for scaffolding, validating, deploying, and scheduling agents from the terminal. Install globally to use the `sapiom` command directly, or run any command without installing using `npx @sapiom/cli`.
+
+<CodeGroup>
+```bash npm
+npm install -g @sapiom/cli
+```
+```bash pnpm
+pnpm add -g @sapiom/cli
+```
+```bash yarn
+yarn global add @sapiom/cli
+```
+</CodeGroup>
+
+<Tip>
+  You can also run any CLI command without a global install: `npx @sapiom/cli agents init my-app`, `npx @sapiom/cli agents check`, etc.
+</Tip>
+
+### @sapiom/mcp — local developer MCP server
+
+The local developer MCP server (`sapiom-dev`) that lets Claude Code, Codex, or any MCP-capable coding agent scaffold, validate, deploy, and inspect Sapiom agents. No global install needed — run it on demand with `npx`.
+
+<CodeGroup>
+```bash npm (Claude Code)
+claude mcp add sapiom -- npx -y @sapiom/mcp
+```
+```bash JSON config
+{
+  "mcpServers": {
+    "sapiom-dev": {
+      "command": "npx",
+      "args": ["-y", "@sapiom/mcp"]
+    }
+  }
+}
+```
+</CodeGroup>
+
+### Agent Studio — browser and desktop app
+
+Agent Studio is a local web app that opens your coding agent in a Sapiom-configured terminal environment. Run it directly with `npx` — no install required:
+
+```bash
+npx @sapiom/agent-studio@latest [dir]
+```
+
+For a native desktop experience, download the **Sapiom Studio** Electron app (macOS, Windows, Linux) from [GitHub Releases](https://github.com/sapiom/sapiom-js/releases).
+
+## Package reference
+
+| Package | Description | Typical use |
+|---|---|---|
+| `@sapiom/agent` | Authoring contract: `defineAgent`, `defineStep`, directives, types | Every agent definition file |
+| `@sapiom/tools` | Typed capability client: sandboxes, repos, models, search, storage, LLM, email, databases, memory | Any code calling Sapiom capabilities |
+| `@sapiom/cli` | CLI: scaffold, validate, deploy, schedule, emit events, deliver signals | Terminal-based workflows and CI/CD |
+| `@sapiom/mcp` | Local developer MCP server (`sapiom-dev`): scaffold, check, run, deploy from your coding agent | Coding-agent-assisted development |
+| `@sapiom/agent-studio` | Agent Studio launcher | Opening Agent Studio via `npx` |
+| `@sapiom/harness` | Agent Studio implementation (local web app) | `sapiom dev` via the CLI |
+| `@sapiom/agent-core` | Pure scaffold/validate/operate functions shared by CLI and MCP | Advanced host integrations |
+| `@sapiom/agent-runtime` | Host-agnostic graph-walker runtime | Advanced host integrations |
+
+<Note>
+  `@sapiom/agent-core` and `@sapiom/agent-runtime` are runtime internals. Most projects never import them directly — they are consumed by the CLI, MCP server, and the Sapiom engine.
+</Note>
+
+## API key setup
+
+A `SAPIOM_API_KEY` is required for any operation that contacts the Sapiom platform: deploying agents, running agents in the cloud, and calling capabilities with `@sapiom/tools`. Local operations — scaffolding, `agents check`, and `run_local` — work without a key.
+
+### Set the environment variable
+
+<CodeGroup>
+```bash Shell (one session)
+export SAPIOM_API_KEY=your-api-key-here
+```
+```bash .env file
+SAPIOM_API_KEY=your-api-key-here
+SAPIOM_API_URL=https://api.sapiom.ai
+```
+</CodeGroup>
+
+Copy the `.env.example` from the examples folder as a starting point:
+
+```bash
+cp .env.example .env
+# Edit .env and fill in your SAPIOM_API_KEY
+```
+
+### Use the key in code
+
+`@sapiom/tools` reads `SAPIOM_API_KEY` automatically when you use the ambient import style, or you can pass it explicitly:
+
+```typescript
+import { createClient } from "@sapiom/tools";
+
+// Explicit — recommended for standalone scripts and attribution control
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+
+// Ambient — resolves from SAPIOM_API_KEY automatically
+import { sandboxes } from "@sapiom/tools";
+await sandboxes.create({ name: "demo" });
+```
+
+Inside a Sapiom agent step, the runtime constructs the client and injects it as `ctx.sapiom` — you never set the key yourself, and every call is automatically attributed to the running execution.
+
+<Warning>
+  Never commit your `SAPIOM_API_KEY` to source control. Add `.env` to your `.gitignore` and use environment secrets in CI.
+</Warning>
+
+## TypeScript configuration
+
+All `@sapiom/*` packages ship TypeScript types and require TypeScript 5.4 or later. Agent definitions use `zod/v4` for input schema declarations — install it alongside `@sapiom/agent`:
+
+<CodeGroup>
+```bash npm
+npm install @sapiom/agent zod
+```
+```bash pnpm
+pnpm add @sapiom/agent zod
+```
+```bash yarn
+yarn add @sapiom/agent zod
+```
+</CodeGroup>
+
+A minimal `tsconfig.json` for an agent project:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "outDir": "dist"
+  },
+  "include": ["src"]
+}
+```
+
+## Verify your install
+
+After installing, scaffold a minimal project and validate it locally to confirm everything is wired up:
+
+```bash
+npx @sapiom/cli agents init hello-agent
+cd hello-agent
+npm install
+npx @sapiom/cli agents check
+```
+
+A passing `agents check` confirms your TypeScript compiles, the agent definition is valid, the manifest builds, and the step graph has no structural errors — without making any network calls or spending any API credits.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="quickstart">
+    Scaffold, author, and deploy your first agent end-to-end in minutes.
+  </Card>
+  <Card title="Agent Authoring" icon="pen-to-square" href="/guides/authoring-agents">
+    Learn the full authoring surface: steps, directives, `ctx.shared`, and input schemas.
+  </Card>
+</CardGroup>

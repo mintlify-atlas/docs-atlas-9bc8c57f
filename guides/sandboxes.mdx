@@ -1,0 +1,172 @@
+---
+title: "Sandboxes: Isolated Ephemeral Compute for Agent Steps"
+sidebarTitle: "Sandboxes"
+description: "Create isolated compute environments, write and transfer files, stream command output, and tear down sandboxes when agent work is done — billed per second until destroyed."
+---
+
+Sandboxes are isolated, ephemeral compute environments you can create on demand, use across agent steps, and tear down when finished. You write files, run commands, stream output, and transfer large binaries — all through the `sandboxes` namespace in `@sapiom/tools`. The `/workspace` directory is the conventional working directory that other capabilities (repositories, coding models) rely on, so keep your files there for seamless composition.
+
+## Installation and import
+
+```bash
+npm install @sapiom/tools
+```
+
+```typescript
+// Explicit client
+import { createClient } from "@sapiom/tools";
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+
+// Ambient import (inside an agent step)
+import { sandboxes } from "@sapiom/tools";
+```
+
+## Creating and destroying a sandbox
+
+`create` provisions a fresh sandbox. Always destroy it in a `finally` block — sandboxes are billed until you call `destroy()` or their `ttl` elapses.
+
+```typescript
+import { sandboxes } from "@sapiom/tools";
+
+const box = await sandboxes.create({ name: "build-01", tier: "small" });
+
+try {
+  await box.writeFile("/workspace/app.py", "print('hi')");
+  const { stdout } = await box.exec("python /workspace/app.py");
+  console.log(stdout);
+} finally {
+  await box.destroy();
+}
+```
+
+<Warning>
+  Sandboxes are live and billed until you stop them. A sandbox keeps running — and accruing cost — until you call `destroy()` or its `ttl` elapses. Always destroy in a `finally` block, or set a short `ttl`.
+</Warning>
+
+## Attaching to an existing sandbox
+
+Use `attach` to reconnect to an already-running sandbox — from another process, from a coding agent run, or from a later step — without provisioning a new one.
+
+```typescript
+// In a later step or a different process
+const box = await sandboxes.attach("build-01");
+const { stdout } = await box.exec("ls /workspace");
+```
+
+<Note>
+  `create` provisions a fresh sandbox. `attach` adopts an existing one by name. Use `get(name)` to check a sandbox's status (`"running"`, `"stopped"`) before attaching, or `list()` to see all your sandboxes — both return metadata, not a live handle.
+</Note>
+
+## Running commands
+
+`exec` waits for the command to finish and returns `{ exitCode, stdout, stderr }`. Non-zero exits resolve normally — they do not throw.
+
+```typescript
+const { exitCode, stdout, stderr } = await box.exec("npm run build");
+if (exitCode !== 0) {
+  console.error("build failed:", stderr);
+}
+```
+
+### Streaming output
+
+For long-running commands, use `execStream` to receive live output as it arrives:
+
+```typescript
+for await (const chunk of box.execStream("npm test")) {
+  process.stdout.write(chunk);
+}
+```
+
+### Background processes
+
+Start a process and poll it later with `getProcess` and `waitForProcess`:
+
+```typescript
+const proc = await box.exec("npm run dev &");
+
+// Later — check without blocking
+const status = await box.getProcess(proc.pid);
+
+// Or block until it finishes
+const result = await box.waitForProcess(proc.pid);
+```
+
+## Writing and reading files
+
+`writeFile` sends the entire body in a single JSON request. For binary or large files, use `uploadFile`, which runs a chunked multipart upload with parallel parts, retries, and auto-abort on failure.
+
+```typescript
+// Small text files
+await box.writeFile("/workspace/config.json", JSON.stringify({ port: 3000 }));
+
+// Binary or large files
+const blob = new Blob([pdfBytes], { type: "application/pdf" });
+await box.uploadFile("/workspace/report.pdf", blob);
+
+// Read a file back
+const contents = await box.readFile("/workspace/config.json");
+```
+
+<Tip>
+  `writeFile` is bounded by the ingress body-size ceiling. Use `uploadFile` for any binary content or files larger than a few megabytes — it accepts `Blob`, `Uint8Array`, or `string`.
+</Tip>
+
+### Uploading a directory
+
+Upload an entire local directory at once with `uploadDir`:
+
+```typescript
+await box.uploadDir("/workspace/project", "./local-project");
+```
+
+## The `/workspace` convention
+
+Other capabilities assume `/workspace` as the base path. The coding agent (`models.coding`) clones repositories into `/workspace/<slug>`, and `repositories.pushFromSandbox` pushes from there. Keep your files under `/workspace` to stay compatible with these composition patterns.
+
+## Creating public URLs
+
+Expose a port running inside the sandbox as a public HTTPS URL:
+
+```typescript
+const { url } = await box.createPublicUrl({ port: 3000 });
+console.log("preview at:", url);
+```
+
+## Credentials and environment variables
+
+The sandbox environment is empty by default. Pass anything your workload needs via `envs` at creation time:
+
+```typescript
+const box = await sandboxes.create({
+  name: "worker",
+  tier: "small",
+  envs: {
+    DATABASE_URL: process.env.DATABASE_URL!,
+    NODE_ENV: "production",
+  },
+});
+```
+
+## Full reference
+
+<Accordion title="All sandbox operations">
+
+| Method | Description |
+|---|---|
+| `sandboxes.create(spec)` | Provision a new sandbox |
+| `sandboxes.attach(name)` | Adopt an existing sandbox by name |
+| `sandboxes.get(name)` | Read metadata and status (read-only) |
+| `sandboxes.list()` | List all your sandboxes (read-only) |
+| `box.exec(cmd)` | Run a command and wait for it to finish |
+| `box.execStream(cmd)` | Stream command output as an async iterable |
+| `box.getProcess(pid)` | Check a background process without blocking |
+| `box.waitForProcess(pid)` | Block until a background process finishes |
+| `box.writeFile(path, content)` | Write a text file (single JSON request) |
+| `box.uploadFile(path, content, opts?)` | Upload binary or large files (chunked multipart) |
+| `box.uploadDir(destPath, srcPath)` | Upload an entire directory |
+| `box.readFile(path)` | Read a file's contents |
+| `box.createPublicUrl({ port })` | Expose a port as a public HTTPS URL |
+| `box.destroy()` | Stop billing and delete the sandbox |
+
+</Accordion>

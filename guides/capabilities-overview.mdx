@@ -1,0 +1,160 @@
+---
+title: "Sapiom Capabilities: Cloud Tools for Your Agents"
+sidebarTitle: "Overview"
+description: "The full catalog of @sapiom/tools capabilities — sandboxes, models, repositories, storage, integrations, and more — with authentication modes and transport security explained."
+---
+
+The `@sapiom/tools` package is the typed TypeScript client for every capability Sapiom exposes — the same catalog your agents call as tools over MCP, but callable directly from your own code. Each capability is a namespace (`sandboxes`, `repositories`, `models`, `memory`, …) that you can import from the barrel or from its own subpath. This page covers how to authenticate, how transport security works, how to attribute calls, and what every capability does at a glance.
+
+## Installation
+
+```bash
+npm install @sapiom/tools
+# or
+pnpm add @sapiom/tools
+```
+
+## Authentication modes
+
+There are two authentication modes. Both expose an identical capability surface — the choice is about where credentials come from.
+
+<Tabs>
+  <Tab title="Explicit (standalone)">
+    Pass an API key to `createClient`. Use this in scripts, CI pipelines, or any code that runs outside a Sapiom agent step.
+
+    ```typescript
+    import { createClient } from "@sapiom/tools";
+
+    const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+    await sapiom.sandboxes.create({ name: "demo" });
+    ```
+  </Tab>
+  <Tab title="Ambient (inside agent steps)">
+    Import namespaces directly. Credentials resolve from `SAPIOM_API_KEY` in standalone scripts, or from the client the Sapiom runtime provides when running inside an agent step — no setup required.
+
+    ```typescript
+    import { sandboxes, repositories, models } from "@sapiom/tools";
+
+    await sandboxes.create({ name: "demo" });
+    ```
+  </Tab>
+</Tabs>
+
+## Transport security
+
+Every request carries your API key. The client enforces where it will send it:
+
+- **HTTPS** — always safe.
+- **Plain `http://` to loopback** — `localhost`, `*.localhost`, `127.0.0.1`, `[::1]` are permitted (e.g. `http://localhost:3000`, `http://services.localhost:3100`).
+- **Trusted private networks** (Docker service names, CI sidecars like `http://api:3000`) — opt in with `createClient({ allowInsecureHttp: true })` or set `SAPIOM_ALLOW_INSECURE_HTTP=1`.
+- **Redirects** — followed, but if the redirect crosses to another origin the API key and all `x-sapiom-*` headers are dropped for the rest of the chain.
+
+Any `http://` URL that doesn't match the loopback or opt-in rules fails before anything is sent.
+
+## Attribution
+
+Attribute calls to a specific agent and trace so they appear correctly in your transaction history. Set attribution once on the client — not per call:
+
+```typescript
+const sapiom = createClient({
+  apiKey: process.env.SAPIOM_API_KEY,
+  attribution: { agentName: "digest-bot", traceId },
+});
+// every call this client makes is attributed to digest-bot / traceId
+```
+
+Inside a Sapiom agent run, skip this entirely — the runtime constructs the client with the running execution's attribution automatically.
+
+If a single process makes calls on behalf of multiple agents or traces, derive a per-context client:
+
+```typescript
+const ctx = sapiom.withAttribution({ agentName: "review-bot", traceId });
+```
+
+## Capabilities
+
+Every capability has its own namespace. Import from the barrel or a subpath (e.g. `@sapiom/tools/sandboxes`). Each has a dedicated README with usage details, preconditions, and gotchas the type signatures can't express.
+
+| Namespace | What it is |
+|---|---|
+| `sandboxes` | Isolated, ephemeral compute |
+| `repositories` | Private, in-network git repos |
+| `models` | Managed loop (`models.run`) and coding agents (`models.coding`) |
+| `fileStorage` | Tenant-scoped object storage (presigned URLs) |
+| `contentGeneration` | Media generation (images + video; audio soon), with optional `storage` |
+| `search` | Search the web, read a page, look up professional emails |
+| `agents` | Run a deployed agent, or dispatch one from a step and await its result |
+| `schedules` | Schedule a deployed agent on a cron or at a set time |
+| `events` | Emit a tenant event from a step, starting matching agents |
+| `database` | Permanent Postgres databases with direct connection credentials |
+| `email` | Transactional email — inboxes, messages, domains, threads, webhooks |
+| `domains` | Register domain names and manage DNS records |
+| `memory` | Long-term memory — namespace-isolated append-log; semantic/keyword/hybrid recall |
+| `google` | Act as a tenant inside Google: Drive, Gmail, raw OAuth |
+| `github` | List a tenant's GitHub repositories |
+| `slack` | Post, edit, react, read threads and users |
+| `linear` / `notion` | MCP-backed connectors (`listTools`, `callTool`); `mcp(slug)` for any connector |
+| `llm` | Routed LLM calls: one-shot `run`, deferred `submit`, and sessions |
+| `decisions` | System One decisions: `evaluate` returns calibrated probabilities |
+| `browserAutomation` | Headless browser sessions |
+| `vault` | Secure secret storage |
+| `keys` | Mint scoped API keys |
+| `speech` | Text-to-speech and speech-to-text |
+
+## Quickstart example
+
+This snippet shows three capabilities composing: a repository, a coding model run, and a push — all from `@sapiom/tools`.
+
+```typescript
+import { createClient } from "@sapiom/tools";
+
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+
+// Create a private repo, have a coding agent build into it, then publish.
+const repo = await sapiom.repositories.create("landing-page");
+const run = await sapiom.models.coding.run({
+  task: "Build a one-page marketing site in index.html.",
+  gitRepository: repo,
+});
+
+if (run.result?.success) {
+  const { sha } = await repo.pushFromSandbox(run.sandbox, {
+    message: "build: landing",
+  });
+  console.log("published", sha);
+}
+```
+
+## Capability pages
+
+<CardGroup cols={2}>
+  <Card title="Sandboxes" icon="box" href="/guides/sandboxes">
+    Create isolated compute environments, exec commands, transfer files, and stream output.
+  </Card>
+  <Card title="Models" icon="brain" href="/guides/models">
+    Run the managed loop or a coding agent that edits a git checkout inside a sandbox.
+  </Card>
+  <Card title="Repositories" icon="code-branch" href="/guides/repositories">
+    Provision private in-network git repos and push agent output deterministically.
+  </Card>
+  <Card title="Storage & Data" icon="database" href="/guides/storage-and-data">
+    File storage, Postgres databases, long-term memory, and content generation.
+  </Card>
+  <Card title="Integrations" icon="plug" href="/guides/integrations">
+    Email, web search, Slack, Google, GitHub, Linear, Notion, LLM routing, and decisions.
+  </Card>
+</CardGroup>
+
+## Usage analytics
+
+The SDK can emit anonymous usage analytics — one `capability.call` event per capability request, carrying the capability name, URL path (query strings stripped), HTTP status, duration, and request size. No request or response bodies are ever recorded. Events describe calls to Sapiom's own API only.
+
+By default nothing is sent. The emitter is a no-op unless you configure a collector endpoint. Delivery is batched in the background and can never throw, block, or slow a capability call. Opt out at any time:
+
+```bash
+SAPIOM_TELEMETRY_DISABLED=1
+# or
+DO_NOT_TRACK=1
+```
+
+If your process constructs many clients over its lifetime, call `await client.shutdown()` when done with each one to flush buffered events. It's idempotent, never rejects, and covers every client derived via `withAttribution`.

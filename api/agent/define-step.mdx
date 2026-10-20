@@ -1,0 +1,311 @@
+---
+title: "defineStep: Define a Typed Step in a Sapiom Agent"
+sidebarTitle: "defineStep"
+description: "Factory that derives a step's run() return type from its declared transitions, stores routing declarations for buildManifest, and produces a typed StepDefinition."
+---
+
+`defineStep` is the authoring surface for individual steps in a Sapiom agent. It accepts a definition object — a name, declared outgoing transitions, an optional input schema, and an async `run` function — and returns a `StepDefinition`. The key design property is that the `run` return type is derived directly from the declared transitions: if you try to `goto` a step that isn't in `next`, call `terminate()` without declaring `terminal: true`, or `fail()` without `canFail: true`, TypeScript surfaces a compile error at the `run` return site rather than a runtime crash.
+
+## Function Signature
+
+```typescript
+function defineStep<
+  TIn = unknown,
+  TShared extends Record<string, unknown> = Record<string, unknown>,
+  const Next extends readonly string[] = readonly [],
+  const Term extends boolean = false,
+  const CanFail extends boolean = false,
+  const PauseDecl extends { signal: string; resumeStep: string } | undefined = undefined,
+>(def: {
+  name: string;
+  next?: Next;
+  terminal?: Term;
+  canFail?: CanFail;
+  pause?: PauseDecl;
+  inputSchema?: ZodType<TIn>;
+  timeoutMs?: number;
+  description?: string;
+  capabilities?: readonly string[];
+  run: (
+    input: TIn,
+    ctx: AgentExecutionContext<TShared>,
+  ) => Promise<Allowed<Next, Term, CanFail, PauseDecl extends { resumeStep: infer R extends string } ? R : never>>;
+}): StepDefinition<TShared>
+```
+
+`TIn` is inferred from `inputSchema` when present, or from the `input` annotation in `run`. `TShared` is inferred from `ctx: AgentExecutionContext<MyShared>`. The `Next`, `Term`, `CanFail`, and `PauseDecl` params are inferred as literal types — no `as const` is needed.
+
+## `StepDefinition` Type
+
+```typescript
+interface StepDefinition<TShared extends Record<string, unknown> = Record<string, unknown>> {
+  readonly name: string;
+  readonly next: readonly string[];
+  readonly terminal: boolean;
+  readonly canFail: boolean;
+  readonly pause?: { readonly signal: string; readonly resumeStep: string };
+  readonly inputSchema?: ZodType<unknown>;
+  readonly timeoutMs?: number;
+  readonly description?: string;
+  readonly capabilities?: readonly string[];
+  run(input: unknown, ctx: AgentExecutionContext<TShared>): Promise<NextStepDirective>;
+}
+```
+
+## Parameters
+
+<ParamField path="name" type="string" required>
+  The step's unique name within the agent. Must match the key used in the `steps` map passed to `defineAgent`. `defineAgent` throws a mismatch error if they differ.
+</ParamField>
+
+<ParamField path="next" type="readonly string[]">
+  The list of step names this step may route to via `goto()`. Defaults to `[]`. The TypeScript type is narrowed to a literal tuple — `goto("stepX", payload)` is only assignable to the `run` return type when `"stepX"` appears in this list. A step with `next: []` and no `terminal`, `canFail`, or `pause` can only `retry()` and is flagged as a dead-end by `validateGraph`.
+</ParamField>
+
+<ParamField path="terminal" type="boolean">
+  Declare that this step may call `terminate()`. Defaults to `false`. Without this declaration, `terminate()` is not assignable to the `run` return type.
+</ParamField>
+
+<ParamField path="canFail" type="boolean">
+  Declare that this step may call `fail()` for a deterministic failure. Defaults to `false`. Without this, `fail()` is not assignable to the `run` return type. See the [Directives](/api/agent/directives) page for when to use `fail()` versus throwing.
+</ParamField>
+
+<ParamField path="pause" type="{ signal: string; resumeStep: string }">
+  Declare a pause edge: the signal name the engine will wait for and the step to run when the signal arrives. Required when the `run` function calls `pauseUntilSignal()`. The declared `resumeStep` literal must match what is passed to `pauseUntilSignal` — a mismatch is a compile error.
+</ParamField>
+
+<ParamField path="inputSchema" type="ZodType<TIn>">
+  A Zod schema (imported from `zod/v4`) that types and validates the step's input at runtime. The **entry step's `inputSchema` is special** — it becomes the agent's public API: the dashboard Run form, the trigger snippet, and the engine's pre-dispatch validation are all derived from it. Use `.default()` on each field so a zero-input run still validates. The same field on a non-entry step types the inbound payload from a `goto()` or a resumed signal.
+</ParamField>
+
+<ParamField path="timeoutMs" type="number">
+  Per-step execution timeout in milliseconds. The runner enforces this limit on the step's `run` call.
+</ParamField>
+
+<ParamField path="description" type="string">
+  Human-authored one-liner for the canvas step inspector. Deterministic — no LLM involved; read by `buildManifest` exactly like `inputSchema`.
+</ParamField>
+
+<ParamField path="capabilities" type="readonly string[]">
+  Sapiom capability names this step declares it calls (e.g. `["models.coding"]`). Shown in the inspector alongside the run's actual call trace.
+</ParamField>
+
+<ParamField path="run" type="(input: TIn, ctx: AgentExecutionContext<TShared>) => Promise<Allowed<...>>" required>
+  The async step implementation. Receives the step's typed input and `ctx`, and must return a directive (`goto`, `terminate`, `fail`, `pause`, or `retry`). The return type is the `Allowed` union computed from the routing declarations — undeclared transitions are compile errors.
+</ParamField>
+
+## The `Allowed` Type
+
+`Allowed` is the union of directives a step may return, computed from its routing declarations:
+
+```typescript
+type Allowed<
+  Next extends readonly string[],
+  Term extends boolean,
+  CanFail extends boolean,
+  PauseTo extends string,
+> =
+  | Goto<Next[number]>
+  | (Term extends true ? Terminate : never)
+  | (CanFail extends true ? Fail : never)
+  | ([PauseTo] extends [never] ? never : Pause<PauseTo>)
+  | Retry; // always present — universal, not a declared edge
+```
+
+`Retry` is always in the union. Every other directive must be declared.
+
+## Execution Context: `AgentExecutionContext`
+
+Every step's `run` function receives `ctx` as its second argument. The full type is:
+
+```typescript
+interface AgentExecutionContext<TShared extends Record<string, unknown> = Record<string, unknown>> {
+  readonly executionId: string;
+  readonly agentName: string;
+  readonly organizationId: string | null;
+  readonly tenantId: string | null;
+  readonly input: unknown;
+  readonly shared: TypedContextStore<TShared>;
+  readonly history: readonly StepExecutionRecord[];
+  readonly attempts: number;
+  readonly logger: StepLogger;
+  readonly sapiom: Sapiom;
+  readonly isLocalTrace?: boolean;
+}
+```
+
+### `ctx.executionId`
+
+The stable ID for this execution. Use it as the default `correlationId` when calling `pauseUntilSignal` manually, or to stash a reference in durable storage.
+
+### `ctx.logger`
+
+Structured logger with `info`, `warn`, `error`, and `debug` methods. All log entries are correlated with the execution in the Sapiom dashboard.
+
+```typescript
+ctx.logger.info("Processing item", { itemId: input.id, attempt: ctx.attempts });
+ctx.logger.warn("Rate limited, will retry", { retryAfterMs: 2000 });
+ctx.logger.error("Downstream service error", { statusCode: 503 });
+```
+
+### `ctx.shared`
+
+Typed key/value store that persists across steps. The entire snapshot has a hard 256 KiB quota. `set()` measures the complete candidate snapshot before committing — an oversized or unserializable value throws and leaves the previous state unchanged.
+
+```typescript
+interface TypedContextStore<TShared extends Record<string, unknown>> {
+  get<K extends keyof TShared>(key: K): TShared[K] | undefined;
+  set<K extends keyof TShared>(key: K, value: TShared[K]): void;
+  has<K extends keyof TShared>(key: K): boolean;
+  snapshot(): Partial<TShared>;
+}
+```
+
+<Warning>
+Keep compact scalars, IDs, and durable-storage references in `ctx.shared`. Store bulk API responses, documents, and research results in durable storage and put only the resulting reference in `ctx.shared`. The stable error code for an oversized snapshot is `CTX_SHARED_SIZE_LIMIT_EXCEEDED`.
+</Warning>
+
+### `ctx.sapiom`
+
+The pre-authenticated capability client bound to the execution's tenant credential. Provides access to sandboxes, coding models, and other Sapiom-hosted capabilities without any auth plumbing in the step itself.
+
+### `ctx.attempts`
+
+Zero-based attempt counter for the current step. Use this to adjust behavior on retries — for example, increasing a timeout or switching to a fallback path after the first attempt.
+
+### `ctx.history`
+
+Completed step execution records for this run, oldest first. Each `StepExecutionRecord` includes the step name, attempt number, status, input, output, error, shared state snapshot, and timestamps.
+
+### `ctx.isLocalTrace`
+
+`true` when running under `run_local`. Absent (not `false`) on a deployed run, so `input.dryRun ?? ctx.isLocalTrace` evaluates correctly in production without the runner setting anything. Use this flag to guard I/O that `run_local` cannot stub — raw database connections, raw HTTP to third parties, etc. Capability calls via `ctx.sapiom.*` are already stubbed locally.
+
+## Complete Example
+
+```typescript
+import { defineStep, goto, terminate, fail, retry } from "@sapiom/agent";
+import { z } from "zod/v4";
+
+interface PipelineShared {
+  artifactId: string;
+}
+
+// Entry step with inputSchema — this becomes the agent's public API
+const ingest = defineStep({
+  name: "ingest",
+  next: ["transform"],
+  canFail: true,
+  inputSchema: z.object({
+    sourceUrl: z.string().url(),
+    format: z.enum(["json", "csv"]).default("json"),
+  }),
+  async run(input, ctx: AgentExecutionContext<PipelineShared>) {
+    ctx.logger.info("Ingesting source", { url: input.sourceUrl });
+
+    let data: unknown;
+    try {
+      data = await fetchSource(input.sourceUrl);
+    } catch (err) {
+      if (ctx.attempts < 2) {
+        ctx.logger.warn("Fetch failed, retrying", { attempt: ctx.attempts });
+        return retry({ delayMs: 2000, reason: "fetch-failed" });
+      }
+      return fail("Source unreachable after retries", { output: { url: input.sourceUrl } });
+    }
+
+    const id = await storeArtifact(data);
+    ctx.shared.set("artifactId", id);
+    return goto("transform", { artifactId: id, format: input.format });
+  },
+});
+
+// Intermediate step
+const transform = defineStep({
+  name: "transform",
+  next: ["publish"],
+  canFail: true,
+  async run(input, ctx: AgentExecutionContext<PipelineShared>) {
+    const artifactId = ctx.shared.get("artifactId");
+    ctx.logger.debug("Transforming artifact", { artifactId });
+
+    const result = await runTransform(input.artifactId, input.format);
+    if (!result.ok) {
+      return fail(`Transform failed: ${result.error}`);
+    }
+    return goto("publish", { transformedId: result.id });
+  },
+});
+
+// Terminal step
+const publish = defineStep({
+  name: "publish",
+  next: [],
+  terminal: true,
+  async run(input, ctx) {
+    const url = await publishArtifact(input.transformedId);
+    ctx.logger.info("Published", { url });
+    return terminate({ publishedUrl: url });
+  },
+});
+```
+
+## Entry Step Input Schema
+
+The entry step's `inputSchema` is the agent's public API. Declare it with `.default()` on every field so the agent can be triggered with zero input from the dashboard:
+
+```typescript
+import { defineStep, terminate } from "@sapiom/agent";
+import { z } from "zod/v4";
+
+const start = defineStep({
+  name: "start",
+  next: [],
+  terminal: true,
+  inputSchema: z.object({
+    repo: z.string().default("sapiom/sapiom"),
+    branch: z.string().default("main"),
+    depth: z.number().int().min(1).default(10),
+  }),
+  // input is typed: { repo: string; branch: string; depth: number }
+  async run(input) {
+    return terminate({ scanned: `${input.repo}@${input.branch}` });
+  },
+});
+```
+
+## Pausing for a Signal
+
+To pause a step and resume it when an external signal arrives, declare a `pause` edge and call `pauseUntilSignal()`:
+
+```typescript
+import { defineStep, pauseUntilSignal, terminate } from "@sapiom/agent";
+
+const waitForApproval = defineStep({
+  name: "waitForApproval",
+  next: ["finalize"],
+  pause: { signal: "approval.decision", resumeStep: "finalize" },
+  async run(input, ctx) {
+    await notifyReviewer(input.draft);
+    return pauseUntilSignal({
+      signal: "approval.decision",
+      resumeStep: "finalize",
+      correlationId: ctx.executionId,
+      timeoutMs: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+  },
+});
+```
+
+See the [Directives](/api/agent/directives) page for the full `pauseUntilSignal` reference.
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="Directives" href="/api/agent/directives" icon="arrow-right">
+    `goto`, `terminate`, `fail`, `retry`, `pauseUntilSignal` — what `run()` returns.
+  </Card>
+  <Card title="defineAgent" href="/api/agent/define-agent" icon="box">
+    Wiring steps into an agent definition with `defineAgent`.
+  </Card>
+</CardGroup>

@@ -1,0 +1,191 @@
+---
+title: "Agent Studio: Build Agents with Your Coding Agent Locally"
+sidebarTitle: "Agent Studio"
+description: "Agent Studio launches a local web app with your coding agent pre-wired to Sapiom MCP servers — providing terminal sessions, agent map, project view, and one-click deploy."
+---
+
+Agent Studio is a local web application that turns your coding agent (Claude Code or Codex) into a Sapiom-aware development environment. One command checks your setup, signs you in, and opens a browser tab with your chosen coding agent running in an embedded terminal — the Sapiom MCP servers already configured, a system prompt with agent-authoring conventions already injected, and your project directory already in scope. You bring the agent; Agent Studio wires it to Sapiom.
+
+## Launching Agent Studio
+
+<Steps>
+
+<Step title="Start Agent Studio">
+
+Run Agent Studio from any directory. It will open in the current directory or the path you supply:
+
+<CodeGroup>
+
+```bash npx (no install)
+npx @sapiom/agent-studio@latest [dir]
+```
+
+```bash Direct harness package
+npx @sapiom/harness@latest [dir]
+```
+
+```bash Via the Sapiom CLI
+# Install once
+npm install -g @sapiom/cli @sapiom/harness
+
+# Then launch
+sapiom dev [dir]
+sapiom dev --port 4200      # use a custom port
+sapiom dev --no-open        # skip opening the browser automatically
+```
+
+</CodeGroup>
+
+All three commands launch the same Agent Studio server. The `npx @sapiom/agent-studio@latest` form is the recommended path for first-time use — no global install required.
+
+</Step>
+
+<Step title="Sign in">
+
+Agent Studio walks you through authentication on first launch. Your credentials are cached in `~/.sapiom/credentials.json` and reused across sessions. Existing credentials are picked up automatically on subsequent launches.
+
+</Step>
+
+<Step title="Start a session">
+
+Once Agent Studio is open, click **+** beside any project in the rail to start a terminal session at that project's root. Your coding agent starts in that terminal, pre-wired with the Sapiom MCP servers and the agent-authoring system prompt. You can also click the tab-strip **+** to start a sibling session in the same project.
+
+</Step>
+
+</Steps>
+
+---
+
+## What Agent Studio Provides
+
+<CardGroup cols={2}>
+  <Card title="Terminal Sessions" icon="terminal">
+    Each session is a real Claude Code or Codex terminal on your machine. Sessions have resumable chat history. The `+` beside a project starts a session at its root; the tab-strip `+` starts a sibling. Sessions are yours — Agent Studio only configures the MCP and injects the system prompt.
+  </Card>
+  <Card title="MCP Pre-Wired" icon="plug">
+    Every session receives the `sapiom` (remote capability) and `sapiom-dev` (local developer) MCP configurations automatically, injected per-session via flags. Your global agent settings are never touched — zero config mutation.
+  </Card>
+  <Card title="Templates" icon="copy">
+    Quick-start templates and a gallery of bundled starters let your coding agent scaffold a new agent project from a proven pattern. Templates use whichever coding agent you have selected.
+  </Card>
+  <Card title="Agent Rail" icon="sidebar">
+    Agent projects (`sapiom.json`) under your working directory are discovered and tracked in the rail. Each project shows its sessions. Click a project to open its Agent Map.
+  </Card>
+  <Card title="Project View & Agent Map" icon="map">
+    The Agent Map is computed live from source code — systems, agents, steps, and the code-proven edges between them. It refreshes automatically when files change. Click any agent node for a detail card; double-click to open the full agent modal.
+  </Card>
+  <Card title="App Links" icon="link">
+    The project header lists each deployed agent's App Link and any dev-server URLs detected from your session's tool calls, labelled with the agent's name or port.
+  </Card>
+</CardGroup>
+
+---
+
+## The Project View
+
+Click a project on the rail to open its project view. The centre shows the **Agent Map** at full width. A floating card in the bottom-right corner updates based on what you have selected:
+
+| Selection | Card shows |
+|---|---|
+| Nothing (the project itself) | A composer: **Ask about this project** |
+| An agent node | Agent name, **Deployed** or **Draft** badge, **Open agent** button, **Open in Finder** button, and **Ask about \<name\>** composer |
+| An agent not in Studio's list | The same row without the two action buttons, plus the composer |
+
+Press Escape or click the empty map background to return the card to the project-level view.
+
+### Agent Map
+
+The Agent Map is computed from the project's code by the `sapiom_dev_map` tool in `@sapiom/mcp` — nothing about agents or edges is stored. Studio watches the folder and re-reads the map after any file change.
+
+- **Systems** are groups of agents joined by code-proven launches, events, signals, and timers. ELK arranges each system and packs systems and loose agents together. A re-read with no structural change reuses existing positions, so nothing jumps unexpectedly.
+- **Agents** show a **Deployed** or **Draft** badge (from the signed-in account, or the `sapiom.json` `definitionId`), a change indicator dot when source has changed since the drawn ref, and chips for resources shared with another agent.
+- **Edges** are only the calls the code proves. Hover an edge for its kind and the file and line number that proves it.
+
+### Map Chat
+
+Press Enter in the card's composer to open the **map chat** — an Assistant conversation that belongs to the project. It can read the project and call hosted Sapiom tools, but it never edits files. When a request needs code changes, it offers a **hand-off card** with a generated prompt and a **Start session** button that opens a real Claude Code session at the project root.
+
+<Info>
+The map chat conversation persists across node selections, minimization, and Studio restarts. Each project has its own. Press **New chat** to start over.
+</Info>
+
+---
+
+## The Agent Modal
+
+Click **Open agent** (or double-click an agent node) to open the agent modal over the map. It has three tabs:
+
+<Accordion title="Canvas">
+
+The agent's step graph, rendered live from source code without starting a session. Click a step for a card showing its description, inputs, outputs, and what it calls. Launched child agents open in place within the same modal.
+
+The Canvas header carries **Visualize** (re-read the graph), **Run locally**, **Run** (production), and **Deploy** with progress indicators beside each. **`</>`** shows integration snippets (TypeScript SDK and cURL) once the agent has a ready cloud build.
+
+</Accordion>
+
+<Accordion title="Runs">
+
+The agent's runs, newest first. Pick a run for its workspace: timeline, result, and an attempt inspector for a picked attempt.
+
+</Accordion>
+
+<Accordion title="Secrets">
+
+The values this agent's runs receive, by name. Use **Add secret** or **Import .env**. Values are write-only. Before the agent is linked, secrets are held locally and injected into local runs; they are uploaded to the cloud when the agent deploys.
+
+</Accordion>
+
+---
+
+## Sessions
+
+A session is one Claude Code or Codex terminal, usually at a project root. Studio does not bind a session to a specific agent — agent detail lives in the agent modal, not beside the session.
+
+- To end a live session, press **×** on its rail row or **End session** in the session menu. Ending is immediate with no confirmation.
+- The exited row stays in the rail for history. Press **×** on the exited row to hide it.
+- Sessions have resumable chat history; switching views detaches the display while execution continues.
+
+### Zero Config Mutation
+
+Agent Studio injects MCP configuration and the system prompt per-session via flags. Your global Claude Code or Codex settings are never modified. For Codex, Studio uses session-specific server names (e.g. `sapiom-dev-<session suffix>`) to avoid inheriting stale credentials or conflicting transports from a server with the same name.
+
+---
+
+## The Desktop App: Sapiom Studio
+
+For a native desktop experience, **Sapiom Studio** is the Electron host for the same Agent Studio web app — signed installers for macOS, Windows, and Linux available from [GitHub Releases](https://github.com/sapiom/sapiom-js/releases). The desktop app provides:
+
+- A native window with the same full Agent Studio feature set
+- Native **Open in Finder** / **Show in Explorer** / **Open folder** for agent directories
+- No browser required — the app hosts Agent Studio directly
+
+<Note>
+`@sapiom/harness-desktop` ships as signed installers and is not published to npm. Download it directly from GitHub Releases.
+</Note>
+
+---
+
+## Telemetry
+
+With explicit opt-in, Agent Studio collects usage events (session lifecycle, tool calls) to improve Sapiom. Pass `--no-telemetry` to disable collection entirely. Events are also written locally to `~/.sapiom/harness/events.ndjson` for your inspection.
+
+```bash
+sapiom dev --no-telemetry
+```
+
+## Uninstall
+
+All harness-owned state lives under `~/.sapiom/harness`. To remove it completely:
+
+```bash
+rm -rf ~/.sapiom/harness
+```
+
+<CardGroup cols={2}>
+  <Card title="Deploy" icon="rocket" href="/guides/deploy">
+    Deploy agents from the CLI or directly from the agent modal's Deploy button.
+  </Card>
+  <Card title="MCP Servers" icon="server" href="/guides/mcp-servers">
+    Learn how Agent Studio pre-wires both the sapiom-dev and remote sapiom MCP servers.
+  </Card>
+</CardGroup>

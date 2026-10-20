@@ -1,0 +1,227 @@
+---
+title: "Step Graph Structure: Transitions, Entries, and Terminals"
+sidebarTitle: "Step Graph"
+description: "Sapiom agents are modeled as typed directed graphs where every edge is a compile-checked transition — learn how entries, terminals, and inputSchema compose."
+---
+
+Every Sapiom agent is a **step graph**: a finite directed graph where nodes are steps and edges are the transitions those steps may take. The graph is not inferred at runtime — it is declared in the step definitions themselves through `next`, `terminal`, `canFail`, and `pause` fields. TypeScript derives the `run` return type from those declarations, the build phase reads them to produce a manifest, and `validateGraph` checks the result for structural correctness before anything is deployed.
+
+## What a step graph looks like
+
+A two-step agent with one directed edge looks like this in code and concept:
+
+```
+         inputSchema (public API)
+              │
+          ┌───▼───┐      goto("finish", …)      ┌──────────┐
+  ──────▶ │ start │ ──────────────────────────▶ │  finish  │ ──▶ (end)
+          └───────┘                             └──────────┘
+           entry                                 terminal: true
+```
+
+```typescript
+import { defineAgent, defineStep, goto, terminate } from "@sapiom/agent";
+import { z } from "zod/v4";
+
+const start = defineStep({
+  name: "start",
+  next: ["finish"],
+  inputSchema: z.object({
+    repo: z.string().default("sapiom/sapiom"),
+  }),
+  async run(input, ctx) {
+    return goto("finish", { scanned: input.repo });
+  },
+});
+
+const finish = defineStep({
+  name: "finish",
+  next: [],
+  terminal: true,
+  async run(input) {
+    return terminate({ result: input.scanned });
+  },
+});
+
+export const myAgent = defineAgent({
+  name: "my-agent",
+  entry: "start",
+  steps: { start, finish },
+});
+```
+
+## The `next` array
+
+`next` lists every step this step is allowed to transition to by name. The TypeScript compiler narrows the first argument of `goto` to exactly the strings in this array — so a typo or an undeclared destination is a compile error:
+
+```typescript
+const process = defineStep({
+  name: "process",
+  next: ["success", "retry"],      // only these two transitions are valid
+  async run(input, ctx) {
+    if (input.ok) {
+      return goto("success", { id: input.id });   // ✅ declared
+    }
+    return goto("retry", { attempt: 1 });          // ✅ declared
+    // return goto("unknown", {});                 // ❌ TypeScript error
+  },
+});
+```
+
+A step with `next: []` may only call `terminate` (if `terminal: true`) or `fail` (if `canFail: true`).
+
+## `terminal: true`
+
+Marking a step `terminal: true` adds `terminate(output)` to its allowed return type. A step can be both `terminal` and have a non-empty `next` array — useful when a step might complete the run normally or hand off to a recovery step:
+
+```typescript
+const finalize = defineStep({
+  name: "finalize",
+  next: ["escalate"],   // can also transition out
+  terminal: true,       // can also terminate
+  async run(input, ctx) {
+    if (input.critical) {
+      return goto("escalate", { reason: "needs human review" });
+    }
+    return terminate({ done: true });
+  },
+});
+```
+
+## `canFail`
+
+Set `canFail: true` to unlock `fail(reason)` as a valid return. A failure directive ends the run with a structured, inspectable record — distinct from an exception, which the engine treats as an unexpected error:
+
+```typescript
+import { defineStep, fail, goto } from "@sapiom/agent";
+
+const validate = defineStep({
+  name: "validate",
+  next: ["process"],
+  canFail: true,
+  async run(input, ctx) {
+    if (!input.data) {
+      return fail({ code: "MISSING_DATA", message: "No data provided" });
+    }
+    return goto("process", { data: input.data });
+  },
+});
+```
+
+## The entry step and its `inputSchema`
+
+The `entry` field on `defineAgent` names the step that receives the initial run input. The **entry step's `inputSchema` is the agent's public API** — it is the single source of truth for:
+
+- The dashboard **Run once** form (each field becomes a labelled input)
+- Trigger snippet generation
+- The engine's **pre-dispatch validation** (bad input is rejected before a step runs)
+
+Declare it on the entry step with `.default()` on every field so a zero-input run still validates:
+
+```typescript
+import { defineStep, terminate } from "@sapiom/agent";
+import { z } from "zod/v4";
+
+const start = defineStep({
+  name: "start",
+  next: [],
+  terminal: true,
+  inputSchema: z.object({
+    repo: z.string().default("sapiom/sapiom").describe("The repository to scan"),
+    depth: z.number().int().min(1).default(3).describe("Scan depth"),
+  }),
+  async run(input) {
+    // `input` is typed as `{ repo: string; depth: number }` — validated before run
+    return terminate({ scanned: input.repo, depth: input.depth });
+  },
+});
+```
+
+`inputSchema` on a **non-entry step** types that step's inbound `goto` payload — including the payload a resumed step receives after a `pauseUntilSignal`. Declare it on any step where you want validated, typed input.
+
+<Note>
+  Import `z` from `zod/v4`, not `zod`. The `@sapiom/agent` introspection layer targets the Zod v4 API and the two module paths are not interchangeable.
+</Note>
+
+## `buildManifest` and `validateGraph`
+
+The build phase calls `buildManifest` to produce a pure-data `AgentManifest` from your `defineAgent` export, and then `validateGraph` to check it structurally:
+
+```typescript
+import { buildManifest, validateGraph } from "@sapiom/agent";
+import { myAgent } from "./my-agent.js";
+
+const manifest = buildManifest(myAgent);
+const result = validateGraph(manifest);
+
+if (!result.valid) {
+  console.error("Graph is invalid:", result.errors);
+}
+```
+
+`validateGraph` catches:
+
+- Steps referenced in `next` or `entry` that are not in `steps`
+- Steps that are unreachable from `entry`
+- Graphs with no terminal or fail exit (runs that could never end)
+
+`assertValidGraph` is the throwing variant — useful in test files:
+
+```typescript
+import { assertValidGraph, buildManifest } from "@sapiom/agent";
+
+assertValidGraph(buildManifest(myAgent)); // throws GraphValidationError on failure
+```
+
+<Tip>
+  Run `assertValidGraph` in a dedicated test file and include it in CI. A broken graph is always a build-time error, never a runtime surprise.
+</Tip>
+
+## `pause` declarations
+
+When a step suspends execution with `pauseUntilSignal`, it must also declare the pause statically so the build phase can include it in the manifest:
+
+```typescript
+const code = defineStep({
+  name: "code",
+  next: ["review"],
+  pause: { signal: "CODING_RESULT", resumeStep: "review" },
+  async run(input, ctx) {
+    return pauseUntilSignal(
+      ctx.sapiom.models.coding.launch({ task: input.task }),
+      { resumeStep: "review" },
+    );
+  },
+});
+```
+
+Both the static `pause` declaration and the runtime `pauseUntilSignal` call must agree on `signal` and `resumeStep`. A mismatch is not currently a compile error, but it is caught by `validateGraph` and will prevent deployment.
+
+## Full graph reference
+
+| Field | Type | Required | Purpose |
+|---|---|---|---|
+| `name` | `string` | ✅ | Stable step identifier |
+| `next` | `string[]` | ✅ | Allowed `goto` destinations |
+| `terminal` | `boolean` | — | Enables `terminate(…)` |
+| `canFail` | `boolean` | — | Enables `fail(…)` |
+| `pause` | `{ signal, resumeStep }` | — | Enables `pauseUntilSignal(…)` |
+| `inputSchema` | `ZodSchema` | — | Types + validates inbound payload |
+| `run` | `async (input, ctx) => Allowed` | ✅ | Step implementation |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Authoring Agents" icon="pen" href="/guides/authoring-agents">
+    Start with defineAgent and defineStep and build your first agent
+  </Card>
+  <Card title="Context & State" icon="database" href="/guides/context-and-shared-state">
+    Pass data across steps with ctx.shared and its 256 KiB quota
+  </Card>
+  <Card title="Pausing & Signals" icon="pause" href="/guides/pausing-and-signals">
+    Declare pause nodes in the graph and resume them with signals
+  </Card>
+  <Card title="Events vs Signals" icon="bolt" href="/guides/events-vs-signals">
+    Distinguish the two namespaces for starting and resuming agent runs
+  </Card>
+</CardGroup>

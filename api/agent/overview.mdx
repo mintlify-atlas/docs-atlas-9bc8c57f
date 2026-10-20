@@ -1,0 +1,227 @@
+---
+title: "@sapiom/agent: Agent Authoring Contract Reference"
+sidebarTitle: "Overview"
+description: "The versioned public contract shared by customer agent definitions, the sandbox step-runner, and the engine. Lean by design — types plus a small protocol runtime over zod."
+---
+
+The `@sapiom/agent` package is the load-bearing authoring contract for Sapiom orchestrations. It is intentionally lean — types plus roughly 100 lines of protocol runtime built on zod — with no capability clients, no engine internals, and no framework imports. Every customer agent definition, the sandbox step-runner that executes individual steps, and the engine that validates completion payloads all read from this single versioned package.
+
+## Install
+
+```bash
+npm install @sapiom/agent
+```
+
+## Quick Start
+
+```typescript
+import { defineAgent, defineStep, goto, terminate } from "@sapiom/agent";
+
+const start = defineStep({
+  name: "start",
+  next: ["finish"],
+  async run(input, ctx) {
+    return goto("finish", { greeting: `hello ${input.name}` });
+  },
+});
+
+const finish = defineStep({
+  name: "finish",
+  next: [],
+  terminal: true,
+  async run() {
+    return terminate({ done: true });
+  },
+});
+
+export const hello = defineAgent({
+  name: "hello",
+  entry: "start",
+  steps: { start, finish },
+});
+```
+
+## Three Consumers
+
+<CardGroup cols={3}>
+  <Card title="Customer Definitions" icon="file-code">
+    Agent source code imports types and constructors from this package. The TypeScript compiler enforces declared transitions at build time.
+  </Card>
+  <Card title="Sandbox Step-Runner" icon="play">
+    Reads a step's `input.json`, constructs `ctx`, executes one step's `run()`, and posts the directive back to the engine.
+  </Card>
+  <Card title="Engine" icon="gear">
+    Uses directive guards (`isContinue`, `isTerminate`, etc.) and the manifest schema to validate pure-data completion payloads — it never executes customer code.
+  </Card>
+</CardGroup>
+
+## Exports by Category
+
+### Directives — Protocol Contract
+
+These are the load-bearing wire types that travel between the step-runner and the engine. The `DIRECTIVE_KIND` constants are the single source of truth for all `kind` values.
+
+| Export | Kind |
+|--------|------|
+| `DIRECTIVE_KIND` | Constant object: `CONTINUE`, `RETRY`, `PAUSE_UNTIL_SIGNAL`, `TERMINATE`, `FAIL` |
+| `isContinue(d)` | Type guard for `ContinueDirective` |
+| `isRetry(d)` | Type guard for `RetryDirective` |
+| `isPause(d)` | Type guard for `PauseUntilSignalDirective` |
+| `isTerminate(d)` | Type guard for `TerminateDirective` |
+| `isFail(d)` | Type guard for `FailDirective` |
+| `DirectiveKind` | Union type of all `kind` string literals |
+| `NextStepDirective` | Union of all five directive interfaces |
+| `ContinueDirective` | Wire interface for `continue` |
+| `RetryDirective` | Wire interface for `retry` |
+| `PauseUntilSignalDirective` | Wire interface for `pause_until_signal` |
+| `TerminateDirective` | Wire interface for `terminate` |
+| `FailDirective` | Wire interface for `fail` |
+
+### Transition Constructors — Authoring Surface
+
+Branded constructor functions and their return types. These are what step authors call inside `run()`.
+
+| Export | Kind |
+|--------|------|
+| `goto(target, output?)` | Returns `Goto<Target>` — route to a declared `next` step |
+| `terminate(output?, opts?)` | Returns `Terminate` — finalize as completed |
+| `fail(reason?, opts?)` | Returns `Fail` — finalize as deterministically failed |
+| `pauseUntilSignal(args \| handle, opts?)` | Returns `Pause<Resume>` or `Promise<Pause<Resume>>` |
+| `retry(opts?)` | Returns `Retry` — re-run this step |
+| `Goto<Target>` | Branded `continue` with target step name at type level |
+| `Terminate` | Branded `terminate` carrying optional `output` |
+| `Fail` | Branded `fail` carrying optional `output` |
+| `Pause<Resume>` | Branded `pause_until_signal` with resume step at type level |
+| `Retry` | Branded `retry` |
+
+### Step Authoring
+
+| Export | Kind |
+|--------|------|
+| `defineStep(def)` | Factory that creates a `StepDefinition` and derives the `run` return type |
+| `StepDefinition` | The runtime-readable step shape stored in `AgentDefinition.steps` |
+| `Allowed<Next, Term, CanFail, PauseTo>` | Derived union — the set of transitions a step's `run` may return |
+| `Step` | *(deprecated)* Engine-internal interface; retained for backward compatibility |
+| `StepResult` | *(deprecated)* Engine-internal per-step shape; retained for backward compatibility |
+
+### Execution Context
+
+| Export | Kind |
+|--------|------|
+| `AgentExecutionContext<TShared>` | The `ctx` object a step's `run` receives |
+| `TypedContextStore<TShared>` | Interface for `ctx.shared` — typed key/value with snapshot quota |
+| `InMemoryContextStore<TShared>` | Concrete in-memory store used by the runner |
+| `InMemoryContextStoreOptions` | Constructor options for `InMemoryContextStore` |
+| `StepExecutionRecord` | History entry in `ctx.history` |
+| `StepLogger` | Structural logger interface (`info`, `warn`, `error`, `debug`) |
+| `FinishedStepStatus` | `'dispatched' \| 'succeeded' \| 'failed'` |
+
+### Agent Definition
+
+| Export | Kind |
+|--------|------|
+| `defineAgent(def)` | Factory: validates, brands, and returns an `AgentDefinition` |
+| `AgentDefinition<TInput, TShared>` | The complete agent contract: `name`, `entry`, `steps`, optional `inputSchema` |
+| `isAgentDefinition(val)` | Brand guard — detects definitions produced by `defineAgent` |
+| `AGENT_DEFINITION_BRAND` | `Symbol.for('sapiom.models.definition')` — the non-enumerable brand symbol |
+| `isLegacyOrchestrationDefinition(val)` | Brand guard for pre-rename `defineOrchestration` definitions |
+| `LEGACY_ORCHESTRATION_DEFINITION_BRAND` | `Symbol.for('sapiom.orchestration.definition')` |
+
+### Errors
+
+| Export | Kind |
+|--------|------|
+| `AgentError` | Base class for all errors this package throws |
+| `UnknownStepError` | A referenced step name is not in the `steps` map |
+| `StepInputValidationError` | A step's input failed its declared `inputSchema` |
+| `DisallowedTransitionError` | A step returned a `goto` target it did not declare |
+| `STEP_INPUT_VALIDATION_ERROR_CONTRACT` | Versioned wire contract object for input validation failures |
+| `stepInputValidationErrorPayloadSchema` | Zod schema for the wire payload |
+| `isStepInputValidationErrorPayload(val)` | Structural guard for the cross-process payload |
+| `StepInputValidationErrorPayload` | Type of the serialized input-validation error |
+
+### `ctx.shared` Quota Contract
+
+The `ctx.shared` snapshot has a hard 256 KiB (262,144 byte) limit measured as the UTF-8 byte length of `JSON.stringify(snapshot)`.
+
+| Export | Kind |
+|--------|------|
+| `CTX_SHARED_QUOTA_CONTRACT` | Versioned policy object: `limitBytes`, `errorCode`, `serialization` |
+| `MAX_SHARED_SNAPSHOT_BYTES` | `262144` — the numeric quota |
+| `CtxSharedSizeLimitExceededError` | Thrown when a `set()` would push the snapshot over the limit |
+| `ctxSharedSizeLimitExceededPayloadSchema` | Zod schema for the wire payload |
+| `findCtxSharedSizeViolation(snapshot)` | Returns a `CtxSharedSizeViolation` or `undefined` |
+| `isCtxSharedSizeLimitExceededPayload(val)` | Structural guard |
+| `measureCtxSharedSnapshotBytes(snapshot)` | Returns the UTF-8 byte length of the snapshot |
+| `CtxSharedSizeLimitExceededErrorOptions` | Constructor options |
+| `CtxSharedSizeLimitExceededPayload` | Wire payload type |
+| `CtxSharedSizeLimitPhase` | `'ctx_shared_set' \| 'step_completion' \| 'step_dispatch'` |
+| `CtxSharedSizeViolation` | `{ actualBytes, limitBytes }` |
+
+### `ctx.shared` Serialization Errors
+
+| Export | Kind |
+|--------|------|
+| `CTX_SHARED_SERIALIZATION_ERROR_CONTRACT` | Versioned contract for JSON encoding failures |
+| `CtxSharedSerializationError` | Thrown when `JSON.stringify` fails on a candidate value |
+| `ctxSharedSerializationErrorPayloadSchema` | Zod schema |
+| `isCtxSharedSerializationErrorPayload(val)` | Structural guard |
+| `CtxSharedSerializationErrorOptions` | Constructor options |
+| `CtxSharedSerializationErrorPayload` | Wire payload type |
+| `CtxSharedSerializationPhase` | Phase enum for serialization failure context |
+
+### Manifest (Build → Engine Contract)
+
+| Export | Kind |
+|--------|------|
+| `MANIFEST_PROTOCOL` | Versioned manifest protocol object |
+| `agentManifestSchema` | Zod schema for the manifest JSON |
+| `AgentManifest` | Full manifest type |
+| `AgentStepManifest` | Per-step manifest type |
+| `ManifestTransition` | Transition edge in the manifest graph |
+| `buildManifest(def)` | Generate a manifest from an `AgentDefinition` |
+| `validateGraph(def)` | Returns a `GraphValidation` result |
+| `assertValidGraph(def)` | Throws if the graph is invalid |
+| `GraphValidation` | Validation result type |
+
+### Introspection
+
+| Export | Kind |
+|--------|------|
+| `zodToJsonSchema(schema)` | Convert a Zod schema to JSON Schema |
+| `normalizeInputJsonSchema(schema)` | Normalize for the engine's input contract |
+| `exampleFromJsonSchema(schema)` | Generate an example value from JSON Schema |
+| `stepInputContract(def, stepName)` | Extract a `StepInputContract` for a named step |
+| `workflowInputContract(def)` | Extract the agent-level `AgentInputContract` |
+| `StepInputContract` | Type |
+| `AgentInputContract` | Type |
+
+### Injected Run Configuration
+
+| Export | Kind |
+|--------|------|
+| `resolveResourceHandle(options)` | Read a chosen resource handle from injected run config |
+| `ResolveResourceHandleOptions` | Options type |
+
+## Design Constraint: Stay Lean
+
+<Note>
+`@sapiom/agent` deliberately imports no capability clients, no engine internals, and no NestJS. The only runtime peer dependency is `zod` (via the `zod/v4` subpath). Any import that would pull in a heavier dependency belongs in `@sapiom/tools` or `@sapiom/agent-core`, not here.
+</Note>
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="defineAgent" href="/api/agent/define-agent" icon="box">
+    Full reference for the `defineAgent` factory, `AgentDefinition` fields, and the brand guard.
+  </Card>
+  <Card title="defineStep" href="/api/agent/define-step" icon="function">
+    Full reference for `defineStep`, `StepDefinition`, and the `Allowed` return type.
+  </Card>
+  <Card title="Directives" href="/api/agent/directives" icon="arrow-right">
+    `goto`, `terminate`, `fail`, `retry`, `pauseUntilSignal` — signatures, examples, and type hierarchy.
+  </Card>
+  <Card title="@sapiom/tools" href="/api/tools/overview" icon="wrench">
+    Capability clients available on `ctx.sapiom` inside a step's `run()`.
+  </Card>
+</CardGroup>

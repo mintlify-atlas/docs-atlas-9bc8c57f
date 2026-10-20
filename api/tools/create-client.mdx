@@ -1,0 +1,154 @@
+---
+title: "createClient: Initialize the Sapiom Capability Client"
+sidebarTitle: "createClient"
+description: "Reference for createClient and createClientFromEnv — API key options, transport security, attribution linking, and withAttribution for multi-context use."
+---
+
+`createClient` is the explicit entry point for `@sapiom/tools`. It returns a `Sapiom` client object with every capability namespace attached — the same surface available via the ambient imports, but bound to the credentials and settings you configure at construction time. This page covers every constructor option, the `createClientFromEnv` shorthand, transport security enforcement, the `attribution` field for linking calls to an agent and trace, and the `withAttribution` helper for multi-context processes.
+
+## Basic usage
+
+```typescript
+import { createClient } from "@sapiom/tools";
+
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+
+await sapiom.sandboxes.create({ name: "build-01" });
+```
+
+## `createClient(options)`
+
+<ParamField body="apiKey" type="string" required>
+  Your Sapiom tenant API key. Every request made by this client carries the key in an authorization header. Required when calling from outside a Sapiom agent step; inside a step the runtime injects credentials automatically via the ambient import path.
+</ParamField>
+
+<ParamField body="attribution" type="Attribution">
+  Optional. Links every call this client makes to an agent name and/or trace ID so they appear correctly in your transaction history. Attribution is set once on the client — not per call. See [Attribution](#attribution) below for the full shape.
+</ParamField>
+
+<ParamField body="allowInsecureHttp" type="boolean">
+  Optional. When `true`, allows the client to send requests over plain `http://` to hosts that are neither `localhost` nor a loopback address — for example a Docker or CI service name such as `http://api:3000`. Equivalent to setting the environment variable `SAPIOM_ALLOW_INSECURE_HTTP=1`. See [Transport security](#transport-security) for the full rules.
+</ParamField>
+
+### Return type: `Sapiom`
+
+`createClient` returns a `Sapiom` object — a typed handle with every capability namespace attached as a property, plus two lifecycle methods:
+
+| Member | Type | Description |
+|---|---|---|
+| `sandboxes` | namespace | Isolated ephemeral compute |
+| `repositories` | namespace | Private git repositories |
+| `models` | namespace | Managed loop and coding agents |
+| `fileStorage` | namespace | Object storage with presigned URLs |
+| `contentGeneration` | namespace | Image and video generation |
+| `search` | namespace | Web search, scrape, and email search |
+| `agents` | namespace | Run or dispatch deployed agents |
+| `schedules` | namespace | Cron and one-off agent triggers |
+| `events` | namespace | Emit tenant events |
+| `database` | namespace | Permanent Postgres databases |
+| `email` | namespace | Transactional email |
+| `domains` | namespace | Domain registration and DNS |
+| `memory` | namespace | Long-term semantic memory |
+| `connectors` | namespace | Google, GitHub, Slack, and MCP connectors |
+| `llm` | namespace | Routed LLM calls and sessions |
+| `decisions` | namespace | System One calibrated decisions |
+| `withAttribution(attr)` | method | Derive a new client scoped to a different attribution |
+| `shutdown()` | method | Flush analytics and release the process exit hook |
+
+## `createClientFromEnv()`
+
+A convenience wrapper that reads `SAPIOM_API_KEY` (and optionally `SAPIOM_ALLOW_INSECURE_HTTP`) from the environment and calls `createClient` for you:
+
+```typescript
+import { createClientFromEnv } from "@sapiom/tools";
+
+const sapiom = createClientFromEnv();
+// Equivalent to:
+// createClient({ apiKey: process.env.SAPIOM_API_KEY })
+```
+
+## Transport security
+
+Every request carries your API key, so the client enforces that requests travel over a safe channel before sending anything.
+
+<Accordion title="Allowed transports">
+  - **HTTPS** — always allowed.
+  - **`http://` to a loopback host** — `localhost`, `*.localhost`, `127.0.0.1`, `[::1]`. The local stack (e.g. `http://localhost:3000`, `http://services.localhost:3100`) works without any extra config.
+  - **Trusted private network** — a Docker or CI service name such as `http://api:3000`: opt in explicitly with `createClient({ allowInsecureHttp: true })` or `SAPIOM_ALLOW_INSECURE_HTTP=1`.
+</Accordion>
+
+<Accordion title="Redirect behaviour">
+  Redirects are followed, but the first hop to a different origin drops the `Authorization` key header and every `x-sapiom-*` header for the rest of the redirect chain. A plain `http://` URL that is not loopback or explicitly trusted fails **before** anything is sent — including across a redirect hop.
+</Accordion>
+
+<Warning>
+  Any `http://` URL that is not loopback and not opted-in with `allowInsecureHttp` will throw before the request is attempted. This is enforced client-side to ensure your API key is never sent in cleartext over a non-local network.
+</Warning>
+
+## Attribution
+
+Attribution links all calls made by a client to a specific agent name and trace ID so they appear correctly in your Sapiom transaction history. Set it once at construction time — not per call:
+
+```typescript
+const sapiom = createClient({
+  apiKey: process.env.SAPIOM_API_KEY,
+  attribution: {
+    agentName: "digest-bot",
+    traceId: currentTraceId,
+  },
+});
+// Every call this client makes is attributed to digest-bot / currentTraceId.
+```
+
+<ParamField body="attribution.agentName" type="string">
+  The name of the agent or service making the calls. Appears in transaction history and usage analytics.
+</ParamField>
+
+<ParamField body="attribution.traceId" type="string">
+  An opaque trace identifier that groups all calls in a single execution or request together.
+</ParamField>
+
+<Note>
+  Inside a Sapiom agent step you do not set attribution at all. The runtime constructs the client with the running execution's attribution automatically, so every tool call is attributed correctly without any extra configuration.
+</Note>
+
+## `withAttribution(attr)`
+
+If a single process makes calls on behalf of more than one agent or trace, derive a child client per context with `withAttribution`. The derived client shares the same API key and transport settings as the parent but sends a different attribution header:
+
+```typescript
+const base = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+
+async function handleRequest(traceId: string, agentName: string) {
+  const sapiom = base.withAttribution({ agentName, traceId });
+  await sapiom.sandboxes.create({ name: `sandbox-${traceId}` });
+}
+```
+
+<Tip>
+  `client.shutdown()` called on a root client covers every client derived from it via `withAttribution`. You only need to shut down the root.
+</Tip>
+
+## `client.shutdown()`
+
+Flushes any buffered analytics events and detaches the emitter's process exit hook. Call it when you are done with a client that was constructed inside a request handler or a per-execution context:
+
+```typescript
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+try {
+  await sapiom.repositories.create("project");
+} finally {
+  await sapiom.shutdown();
+}
+```
+
+`shutdown()` is idempotent, never rejects, and resolves immediately when there is nothing to flush. One-shot scripts do not need to call it — events are flushed on process exit automatically. Capability calls made after `shutdown()` still succeed; they just no longer emit analytics.
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `SAPIOM_API_KEY` | Default API key used by `createClientFromEnv()` and the ambient import path |
+| `SAPIOM_ALLOW_INSECURE_HTTP` | Set to `1` to enable plain `http://` to non-loopback hosts (same as `allowInsecureHttp: true`) |
+| `SAPIOM_TELEMETRY_DISABLED` | Set to `1` to disable usage analytics entirely |
+| `DO_NOT_TRACK` | Set to `1` to disable usage analytics (standard opt-out signal) |

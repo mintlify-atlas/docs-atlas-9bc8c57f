@@ -1,47 +1,208 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with the Sapiom SDK in Minutes"
+sidebarTitle: "Quickstart"
+description: "Scaffold, author, and deploy your first Sapiom agent using the CLI, Agent Studio, or direct authoring — with a working hello-agent example included."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+The Sapiom SDK gives you three paths to your first running agent: the **CLI**, which scaffolds a project and deploys from the terminal; **Agent Studio**, which opens a pre-wired coding-agent environment in your browser or desktop; and **direct authoring**, where you write a `defineAgent` definition and deploy it yourself. All three paths result in the same deployed, runnable agent on the Sapiom engine.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<Note>
+  You will need a Sapiom API key for deploy and cloud-run steps. Set it as `SAPIOM_API_KEY` in your environment. Local scaffolding and `run_local` validation work without authentication.
+</Note>
 
-## Prerequisites
+## Path 1 — CLI scaffold and deploy
 
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+The fastest way from nothing to a deployed agent. The CLI scaffolds a complete project, validates the step graph locally, and ships it to the Sapiom engine in three commands.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Scaffold a new agent project">
+    Run `agents init` with your project name. The CLI writes a `sapiom.json`, a `package.json`, and a starter `index.ts` with a working agent definition:
 
     ```bash
-    npm install your-package
+    npx @sapiom/cli agents init my-app
+    cd my-app
     ```
+
+    The generated project includes `@sapiom/agent` as a dependency and a single-step hello agent you can run immediately.
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+  <Step title="Validate the definition locally">
+    Before deploying, check that the bundle compiles, the manifest is valid, and the step graph has no unreachable nodes or missing transitions:
 
     ```bash
-    your-cli init
+    npx @sapiom/cli agents check
     ```
+
+    This runs fully offline — it imports your definition, builds the manifest, and validates the graph without executing any step code or making any network calls.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+  <Step title="Deploy to the Sapiom engine">
+    Build the agent bundle and ship it. The CLI requires `SAPIOM_API_KEY` in your environment:
 
     ```bash
-    your-cli start
+    export SAPIOM_API_KEY=your-api-key-here
+    npx @sapiom/cli agents deploy
+    ```
+
+    Once deployed, you can trigger a run from the Sapiom dashboard, via the CLI (`sapiom agents run`), or programmatically through `@sapiom/tools`.
+  </Step>
+  <Step title="Schedule or trigger your agent (optional)">
+    Schedule the agent to run on a cron, or emit an event to trigger it:
+
+    ```bash
+    # Run on a cron every weekday at 9 AM Eastern
+    npx @sapiom/cli agents schedule create my-app \
+      --cron "0 9 * * 1-5" \
+      --timezone America/New_York
+
+    # Or emit an event that a trigger is subscribed to
+    npx @sapiom/cli agents emit lead.created \
+      --payload '{"leadId":"l_42"}' \
+      --event-id crm-evt-8f2a
     ```
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Path 2 — Agent Studio
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+Agent Studio opens your coding agent (Claude Code or Codex) in a Sapiom-configured terminal environment. MCP servers are pre-wired, agent projects are tracked on the rail, and you get a live Agent Map canvas with one-click deploy and run.
+
+```bash
+npx @sapiom/agent-studio@latest [dir]
+```
+
+One command checks your environment, signs you in, and opens Agent Studio in your browser. Your coding agent can scaffold agents with `sapiom_dev_agents_scaffold`, validate them with `sapiom_dev_agents_check`, run them locally with `sapiom_dev_agents_run_local`, and deploy to the cloud with `sapiom_dev_agents_deploy` — all without leaving the terminal.
+
+Prefer a native app? Download **Sapiom Studio** (macOS, Windows, Linux) from [GitHub Releases](https://github.com/sapiom/sapiom-js/releases). It hosts the same experience in a signed Electron shell.
+
+## Path 3 — Direct authoring
+
+Write the agent definition yourself, starting from the `@sapiom/agent` authoring contract. The example below is the complete `hello-agent` from the SDK's examples folder — the minimal valid definition:
+
+```typescript
+import { defineAgent, defineStep, terminate } from "@sapiom/agent";
+import { z } from "zod/v4";
+
+/**
+ * The entry contract — this agent's public API. The dashboard Run form renders
+ * its labelled fields from this schema. `.default()` on each field means a
+ * zero-input run still validates.
+ */
+const entryInput = z.object({
+  name: z.string().default("world").describe("Who to greet."),
+});
+
+const greet = defineStep({
+  name: "greet",
+  inputSchema: entryInput,
+  next: [],
+  terminal: true,
+  async run(input: { name?: string }, ctx) {
+    // Validate the input, defaulting to a friendly greeting when none is given.
+    const name =
+      typeof input?.name === "string" && input.name.trim().length > 0
+        ? input.name.trim()
+        : "world";
+    ctx.logger.info("greeting", { name });
+    return terminate({ greeting: `Hello, ${name}!` });
+  },
+});
+
+export const agent = defineAgent({
+  name: "hello-agent",
+  entry: "greet",
+  steps: { greet },
+});
+```
+
+<Tip>
+  The entry step's `inputSchema` is the agent's public API — the Sapiom dashboard's Run form, trigger snippets, and the engine's pre-dispatch validation are all derived from it. Add `.default()` to every field so a zero-input run still validates.
 </Tip>
+
+### What makes a valid agent
+
+Every step must declare its outbound transitions with `next` (an array of step names this step may `goto`) or `terminal: true`. The `run` function's return type is **derived** from those declarations — an undeclared `goto("unknown-step", …)` is a TypeScript compile error. The build phase reads those same declarations to validate the graph without executing any code.
+
+### Multi-step agents with capabilities
+
+A more realistic agent spans multiple steps and calls Sapiom capabilities from `ctx.sapiom`. For long-running dispatched capabilities (like a coding agent run), a step pauses and a later step resumes with the result:
+
+```typescript
+import { defineAgent, defineStep, goto, pauseUntilSignal, terminate } from "@sapiom/agent";
+import { CODING_RESULT_SIGNAL } from "@sapiom/tools";
+
+const plan = defineStep({
+  name: "plan",
+  next: ["code"],
+  async run(input, ctx) {
+    return goto("code", { task: `Build a landing page for ${input.product}` });
+  },
+});
+
+const code = defineStep({
+  name: "code",
+  next: ["review"],
+  pause: { signal: CODING_RESULT_SIGNAL, resumeStep: "review" },
+  async run(input, ctx) {
+    const repo = await ctx.sapiom.repositories.create("landing-page");
+    return pauseUntilSignal(
+      ctx.sapiom.models.coding.launch({ task: input.task, gitRepository: repo }),
+      { resumeStep: "review" }
+    );
+  },
+});
+
+const review = defineStep({
+  name: "review",
+  next: [],
+  terminal: true,
+  async run(result) {
+    return terminate({ ok: result.status === "completed" });
+  },
+});
+
+export const agent = defineAgent({
+  name: "landing-builder",
+  entry: "plan",
+  steps: { plan, code, review },
+});
+```
+
+## Calling capabilities outside an agent
+
+`@sapiom/tools` lets you call every Sapiom capability directly from your own code — no agent required. Authenticate with `createClient` and the `SAPIOM_API_KEY` environment variable:
+
+```typescript
+import { createClient } from "@sapiom/tools";
+
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+
+// Create a repo, have a coding agent build into it, then publish.
+const repo = await sapiom.repositories.create("landing-page");
+const run = await sapiom.models.coding.run({
+  task: "Build a one-page marketing site in index.html.",
+  gitRepository: repo,
+});
+
+if (run.result?.success) {
+  const { sha } = await repo.pushFromSandbox(run.sandbox, {
+    message: "build: landing",
+  });
+  console.log("published", sha);
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="package" href="installation">
+    Install packages with npm, pnpm, or yarn. See prerequisites and all available packages.
+  </Card>
+  <Card title="Agent Authoring" icon="pen-to-square" href="/guides/authoring-agents">
+    Deep-dive into step declarations, directives, `ctx.shared`, and input schemas.
+  </Card>
+  <Card title="Capabilities" icon="bolt" href="/guides/capabilities-overview">
+    Reference for every `@sapiom/tools` capability namespace and how to use them.
+  </Card>
+  <Card title="Examples" icon="lightbulb" href="https://github.com/sapiom/sapiom-js/tree/main/examples">
+    Browse 30+ runnable example agents — from hello-agent to autonomous PR bots and content pipelines.
+  </Card>
+</CardGroup>

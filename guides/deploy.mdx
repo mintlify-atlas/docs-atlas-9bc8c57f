@@ -1,0 +1,189 @@
+---
+title: "Deploy and Validate Sapiom Agents from the CLI"
+sidebarTitle: "Deploy"
+description: "Learn how to scaffold, bundle-check, and deploy Sapiom agents using the CLI and the sapiom-dev MCP — including the authentication flow and one-command cloud builds."
+---
+
+The Sapiom CLI (`@sapiom/cli`) is the primary command-line surface for the full agent lifecycle: scaffolding a new project, validating its bundle and step graph locally, and shipping it to the Sapiom cloud engine. Every CLI command also has a corresponding MCP tool in the `sapiom-dev` server, so your coding agent can run the same flow without leaving its session.
+
+## Prerequisites
+
+Install the CLI globally, or run any command with `npx @sapiom/cli` if you prefer not to install:
+
+```bash
+npm install -g @sapiom/cli
+```
+
+---
+
+## The Deploy Flow
+
+<Steps>
+
+<Step title="Scaffold a new agent project">
+
+`sapiom agents init` creates a fully working project with a typed entry file, a `sapiom.json` manifest, and install-ready dependencies.
+
+```bash
+sapiom agents init my-app
+cd my-app
+```
+
+The scaffold writes the minimal authoring contract — a `defineAgent` call wiring named steps together — so you can run `check` immediately. The equivalent MCP tool is `sapiom_dev_agents_scaffold`.
+
+</Step>
+
+<Step title="Validate locally before deploying">
+
+`sapiom agents check` runs three validation passes against your local source without touching the network or spending any Sapiom capability credits:
+
+- **Bundle** — TypeScript compilation and bundling
+- **Manifest** — `sapiom.json` schema and field constraints
+- **Graph** — step reachability, entry-point resolution, and directive consistency
+
+```bash
+sapiom agents check
+```
+
+Fix any reported errors in your source, then re-run until the check is clean. The equivalent MCP tool is `sapiom_dev_agents_check`.
+
+<Tip>
+Run `sapiom agents check` in CI on every pull request — it catches graph and manifest problems before a deploy attempt.
+</Tip>
+
+</Step>
+
+<Step title="Authenticate with Sapiom">
+
+Deploying requires a Sapiom API key. The first time you run a networked command, the CLI prompts you to authenticate. You can also trigger this explicitly via the MCP:
+
+```bash
+# Via MCP in your coding agent
+sapiom_authenticate   # opens a browser login flow, caches the key
+```
+
+Credentials are stored per-environment in `~/.sapiom/credentials.json`. After the initial login, all subsequent deploy and link commands use the cached key automatically. Check your current authentication state with:
+
+```bash
+sapiom_status         # MCP: reports who you're authenticated as
+```
+
+</Step>
+
+<Step title="Link the agent to a hosted definition">
+
+Before deploying for the first time, the CLI resolves or creates the hosted orchestration record for your agent. This happens automatically during `deploy`, but you can also do it explicitly:
+
+```bash
+sapiom agents link
+```
+
+Linking associates your local `sapiom.json` with a cloud definition ID. The equivalent MCP tool is `sapiom_dev_agents_link`. Once linked, the definition ID is written back into `sapiom.json` and subsequent deploys update the same hosted agent.
+
+</Step>
+
+<Step title="Deploy to the cloud">
+
+`sapiom agents deploy` bundles your current local source, ships it to the Sapiom build service, and waits for the cloud build to complete:
+
+```bash
+sapiom agents deploy
+```
+
+A successful deploy produces a **ready cloud build** — after that, the agent is available for production runs, schedules, and event triggers. The equivalent MCP tool is `sapiom_dev_agents_deploy`.
+
+<Note>
+`deploy` implicitly runs the same validation as `sapiom agents check`. A failed check prevents the bundle from being uploaded.
+</Note>
+
+</Step>
+
+</Steps>
+
+---
+
+## Deploying via the MCP
+
+When working with a coding agent (Claude Code or another MCP client), you can drive the entire deploy flow through the `sapiom-dev` MCP without switching to a terminal. The tools mirror the CLI commands one-for-one:
+
+```bash
+# In Claude Code — add sapiom-dev once
+claude mcp add sapiom-dev -- npx -y @sapiom/mcp
+```
+
+Then instruct your coding agent to use these tools in sequence:
+
+| MCP Tool | CLI Equivalent | Requires Auth |
+|---|---|---|
+| `sapiom_dev_agents_scaffold` | `sapiom agents init` | No |
+| `sapiom_dev_agents_check` | `sapiom agents check` | No |
+| `sapiom_authenticate` | *(browser flow)* | — |
+| `sapiom_dev_agents_link` | `sapiom agents link` | Yes |
+| `sapiom_dev_agents_deploy` | `sapiom agents deploy` | Yes |
+| `sapiom_dev_agents_run` | *(cloud run)* | Yes |
+| `sapiom_dev_agents_inspect` | *(inspect execution)* | Yes |
+
+---
+
+## Running and Inspecting After Deploy
+
+Once deployed, start a real cloud execution and inspect its result:
+
+```bash
+# Trigger a production run via MCP
+# sapiom_dev_agents_run    — starts a cloud execution
+# sapiom_dev_agents_inspect — polls or fetches its result
+```
+
+For emitting events or resuming paused executions, see the Events & Signals commands:
+
+```bash
+# Start: fans out to every active event trigger on this type
+sapiom agents emit lead.created --payload '{"leadId":"l_42"}' --event-id crm-evt-8f2a
+
+# Resume: wakes run(s) paused on a matching (name, correlation id) pair
+sapiom agents signal <executionId> --name approval.decision \
+  --correlation-id <executionId> --payload '{"approved":true}'
+```
+
+<Info>
+`--event-id` makes an emit idempotent: reposting the same ID returns the original receipt and starts no new run. Omit it and every call is a distinct delivery.
+</Info>
+
+---
+
+## Machine-Readable Output
+
+Every CLI command accepts `--json` to emit structured output suitable for scripts or CI pipelines:
+
+```bash
+sapiom agents check --json
+sapiom agents deploy --json
+```
+
+---
+
+## Usage Analytics
+
+The CLI emits one anonymous `command.run` event per executed command — carrying only the command name, flag names (never values), duration, and exit status. No event is sent anywhere in the current release. Opt out at any time:
+
+```bash
+SAPIOM_TELEMETRY_DISABLED=1 sapiom agents deploy
+# or
+DO_NOT_TRACK=1 sapiom agents deploy
+```
+
+<CardGroup cols={2}>
+  <Card title="Schedules" icon="clock" href="/guides/schedules">
+    Run deployed agents on cron, one-off, or event-based triggers.
+  </Card>
+  <Card title="Agent Studio" icon="browser" href="/guides/agent-studio">
+    Build and deploy agents visually with your coding agent pre-wired.
+  </Card>
+  <Card title="MCP Servers" icon="server" href="/guides/mcp-servers">
+    Understand the difference between sapiom-dev and the remote sapiom MCP.
+  </Card>
+  <Card title="Events & Signals" icon="bolt" href="/guides/deploy">
+    Emit events that start runs and deliver signals that resume paused ones.
+  </Card>
+</CardGroup>

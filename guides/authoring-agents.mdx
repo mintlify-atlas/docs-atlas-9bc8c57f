@@ -1,0 +1,172 @@
+---
+title: "Author Sapiom Agents with defineAgent and defineStep"
+sidebarTitle: "Authoring Agents"
+description: "Learn how defineAgent and defineStep compose to create type-safe Sapiom agents where every allowed transition is declared at compile time."
+---
+
+The `@sapiom/agent` package provides the two primitives you need to author every Sapiom agent: `defineStep` and `defineAgent`. Each step declares exactly which transitions it may take, and TypeScript derives the `run` function's return type from those declarations — so reaching for an undeclared transition is caught before your code ever ships. `defineAgent` then composes named steps into a complete, named orchestration that the build phase can read, validate, and deploy without executing any of your code.
+
+## Install
+
+```bash
+npm install @sapiom/agent
+```
+
+## The hello-agent example
+
+The simplest valid agent is a single terminal step that greets a name. This is the exact code from `examples/hello-agent`:
+
+```typescript
+import { defineAgent, defineStep, terminate } from "@sapiom/agent";
+import { z } from "zod/v4";
+
+/**
+ * The entry contract — this agent's public API, and what the dashboard "Run
+ * once" form renders its labelled fields from. `name` defaults to the greeting
+ * this scaffold ships with, so a zero-input run still produces a real result.
+ */
+const entryInput = z.object({
+  name: z.string().default("world").describe("Who to greet."),
+});
+
+const greet = defineStep({
+  name: "greet",
+  inputSchema: entryInput,
+  next: [],
+  terminal: true,
+  async run(input: { name?: string }, ctx) {
+    // Validate the input, defaulting to a friendly greeting when none is given.
+    const name =
+      typeof input?.name === "string" && input.name.trim().length > 0
+        ? input.name.trim()
+        : "world";
+    ctx.logger.info("greeting", { name });
+    return terminate({ greeting: `Hello, ${name}!` });
+  },
+});
+
+export const agent = defineAgent({
+  name: "hello-agent",
+  entry: "greet",
+  steps: { greet },
+});
+```
+
+<Note>
+  The agent export must be a named `export const` at the module's top level. The build phase scans your package for `AgentDefinition` brands — it never executes the file.
+</Note>
+
+## defineStep
+
+`defineStep` creates a single step in your agent graph. Every field you pass shapes both the runtime behaviour and the compile-time contract:
+
+<Accordion title="name">
+  A stable string identifier for this step. The `entry` field of `defineAgent` and every `next` array reference this string. Rename a step here and TypeScript will surface every broken reference elsewhere.
+</Accordion>
+
+<Accordion title="next">
+  An array of step name strings this step is allowed to transition to. Passing an empty array (`[]`) means this step can only terminate. If you try to call `goto("some-other-step", …)` from a step that doesn't list it in `next`, TypeScript raises a compile error.
+</Accordion>
+
+<Accordion title="terminal">
+  Set `terminal: true` to allow calling `terminate(…)` from this step. A step with `terminal: true` and a non-empty `next` array may do either — or both in different branches.
+</Accordion>
+
+<Accordion title="canFail">
+  Set `canFail: true` to allow calling `fail(reason)` from this step, producing a structured failure directive the engine records and the caller can inspect. Without `canFail`, `fail(…)` is not in the derived return type.
+</Accordion>
+
+<Accordion title="inputSchema">
+  A [zod/v4](https://zod.dev) schema that types and validates the step's inbound payload. On the **entry step** this schema is the agent's public API — the dashboard Run form, trigger snippets, and the engine's pre-dispatch validation are all derived from it. See [Step Graph](/guides/step-graph) for details.
+</Accordion>
+
+<Accordion title="run">
+  The async function that executes the step. Its first argument is the validated step input; the second is `AgentExecutionContext` (`ctx`). The return type is derived from `next`, `terminal`, `canFail`, and `pause` — undeclared returns are compile errors. See [Context & State](/guides/context-and-shared-state) for what `ctx` provides.
+</Accordion>
+
+## defineAgent
+
+`defineAgent` assembles named steps into a deployable agent definition:
+
+```typescript
+import { defineAgent, defineStep, goto, terminate } from "@sapiom/agent";
+
+const start = defineStep({
+  name: "start",
+  next: ["finish"],
+  async run(input, ctx) {
+    return goto("finish", { greeting: `hello ${input.name}` });
+  },
+});
+
+const finish = defineStep({
+  name: "finish",
+  next: [],
+  terminal: true,
+  async run() {
+    return terminate({ done: true });
+  },
+});
+
+export const hello = defineAgent({
+  name: "hello",
+  entry: "start",
+  steps: { start, finish },
+});
+```
+
+<Accordion title="name">
+  The agent's stable identifier used by the platform for routing, triggers, and the dashboard. Changing it after deployment is treated as a new agent.
+</Accordion>
+
+<Accordion title="entry">
+  The step name that receives the initial run input. Must match a key in `steps`. The entry step's `inputSchema` (if present) is the agent's public API — see [Step Graph](/guides/step-graph).
+</Accordion>
+
+<Accordion title="steps">
+  An object mapping step names to `StepDefinition` values created by `defineStep`. Every step name referenced in any `next` array, or in `entry`, must appear here.
+</Accordion>
+
+## Transition constructors
+
+The `run` function returns a directive value — never a plain object. Use the named constructors:
+
+| Constructor | When to use |
+|---|---|
+| `goto(stepName, payload)` | Transition to another step, passing it a payload |
+| `terminate(output)` | End the run successfully with a final output object |
+| `fail(reason)` | End the run as a structured failure (requires `canFail: true`) |
+| `pauseUntilSignal(…)` | Suspend the run until an external signal arrives (requires `pause` declaration) |
+| `retry(options?)` | Retry this step's `run` function (with optional back-off) |
+
+<Warning>
+  Do not `return` a plain object from `run`. The engine reads the directive `kind` property — a plain object has none, and the step will fail with an undeclared transition error.
+</Warning>
+
+## Compile-time enforcement
+
+The `Allowed` return type is computed from your step's transition declarations. Concretely:
+
+- `next: ["review"]` → `goto("review", payload)` is valid; `goto("publish", payload)` is a TypeScript error
+- `terminal: true` → `terminate(output)` is valid; without it, `terminate` is not in the return type
+- `canFail: true` → `fail(reason)` is valid
+- `pause: { signal, resumeStep }` → `pauseUntilSignal(…)` is valid
+
+This means the build phase and the engine both rely on the same declaration — the build reads the step object's fields (without executing anything) to render the orchestration graph and check for unreachable steps.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Step Graph" icon="diagram-project" href="/guides/step-graph">
+    Learn how entries, transitions, and terminal nodes form a typed directed graph
+  </Card>
+  <Card title="Context & State" icon="database" href="/guides/context-and-shared-state">
+    Use ctx.shared to pass state across steps and ctx.logger to emit structured logs
+  </Card>
+  <Card title="Pausing & Signals" icon="pause" href="/guides/pausing-and-signals">
+    Suspend a step with pauseUntilSignal and resume it from a capability or human gate
+  </Card>
+  <Card title="Events vs Signals" icon="bolt" href="/guides/events-vs-signals">
+    Understand the distinction between starting runs with events and resuming them with signals
+  </Card>
+</CardGroup>

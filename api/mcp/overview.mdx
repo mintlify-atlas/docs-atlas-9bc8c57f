@@ -1,0 +1,117 @@
+---
+title: "@sapiom/mcp: Local Developer MCP Server (sapiom-dev)"
+sidebarTitle: "Overview"
+description: "Install and configure sapiom-dev, the local stdio MCP server for authoring, testing, and deploying Sapiom agents from Claude Code or any MCP host."
+---
+
+`@sapiom/mcp` is the **local developer MCP server** for Sapiom. It runs on your machine over stdio under the server name `sapiom-dev` and gives a coding agent — such as Claude Code — the tools to scaffold, validate, run locally, deploy, and inspect Sapiom agents. It is explicitly not the remote capability surface: `sapiom-dev` exposes developer lifecycle tools, not paid capability tools like web scrape or sandbox execution.
+
+<Note>
+  **Not the remote `sapiom` MCP.** The hosted `sapiom` connector (available through claude.ai) is Sapiom's capability surface: it provides `sapiom_sandbox_*`, web scrape, search, and other metered tools. `sapiom-dev` is entirely separate — a local, unmetered developer surface for building and operating agents. See the [two Sapiom MCP servers](/api/mcp/tools#which-server-to-use) section in the Tools reference for the full comparison.
+</Note>
+
+## Install
+
+`@sapiom/mcp` requires no global installation. It runs on demand via `npx`, which always fetches the latest published version.
+
+### Claude Code
+
+```bash
+claude mcp add sapiom -- npx -y @sapiom/mcp
+```
+
+This registers `sapiom-dev` in your Claude Code MCP configuration automatically.
+
+### Manual JSON configuration
+
+Add the server block to your MCP host's configuration file (e.g. `~/.claude/claude_desktop_config.json` for Claude Desktop, or your project's `.mcp.json`):
+
+```jsonc
+{
+  "mcpServers": {
+    "sapiom-dev": {
+      "command": "npx",
+      "args": ["-y", "@sapiom/mcp"]
+    }
+  }
+}
+```
+
+No other dependencies are required — `npx` handles everything at runtime.
+
+## Configuration
+
+### SAPIOM_ENVIRONMENT
+
+The server targets the `production` environment by default. Override it by setting the `SAPIOM_ENVIRONMENT` environment variable in your MCP host configuration:
+
+```jsonc
+{
+  "mcpServers": {
+    "sapiom-dev": {
+      "command": "npx",
+      "args": ["-y", "@sapiom/mcp"],
+      "env": { "SAPIOM_ENVIRONMENT": "staging" }
+    }
+  }
+}
+```
+
+| Value | Alias | API endpoint | App URL |
+| --- | --- | --- | --- |
+| `production` | `prod` | `api.sapiom.ai` | `app.sapiom.ai` |
+| `staging` | `dev` | `api.sapiom.dev` | `app.sapiom.dev` |
+
+Both values resolve from built-in presets — no config file is required. For a custom target, define it in `~/.sapiom/credentials.json`; the server prints the expected shape if it encounters an unknown environment name.
+
+## Authentication
+
+Most tools that contact Sapiom cloud require an API key. The local authoring tools (`scaffold`, `check`, `run_local`) work without authentication.
+
+<Steps>
+  <Step title="Call sapiom_authenticate">
+    Ask your coding agent to call the `sapiom_authenticate` tool, or invoke it directly through your MCP host. The server opens a browser-based login flow at `app.sapiom.ai`.
+  </Step>
+  <Step title="Complete the login flow">
+    Sign in through the browser. Once authenticated, the server receives and caches the resulting API key.
+  </Step>
+  <Step title="Credentials are cached">
+    The API key is stored per environment in `~/.sapiom/credentials.json`. Subsequent tool calls use it automatically — no re-authentication is needed unless you log out or rotate your key.
+  </Step>
+</Steps>
+
+### Credentials file
+
+Credentials are stored at `~/.sapiom/credentials.json`, keyed by environment name. The server manages this file automatically; you should not need to edit it by hand. If you need to inspect or revoke credentials:
+
+```bash
+# Check who you're authenticated as
+# (ask your agent to call sapiom_status, or run via CLI)
+
+# Clear cached credentials for the current environment
+# (ask your agent to call sapiom_logout)
+```
+
+### Tools that require authentication
+
+The following tools make network calls to Sapiom cloud and require a valid API key:
+
+- `sapiom_dev_agents_link`, `deploy`, `run`, `inspect`, `signal`, `emit_event`
+- All `schedule_*` tools
+- All `sandbox_preview`, `app_*` tools
+- `sapiom_send_feedback`
+
+The local tools `sapiom_dev_agents_scaffold`, `sapiom_dev_agents_check`, and `sapiom_dev_agents_run_local` need no authentication. `scaffold` may query npm for current dependency versions; `check` imports the definition locally; and `run_local` executes your step code with `ctx.sapiom.*` calls replaced by stubs, so direct network, filesystem, environment, and process effects in your code remain real.
+
+## Usage analytics
+
+`@sapiom/mcp` emits anonymous usage telemetry (one `tool.call` event per invocation: tool name, arguments shape, duration, and ok/error class) to the hosted Sapiom collector. Opt out at any time:
+
+```bash
+# In your MCP host env config:
+SAPIOM_TELEMETRY_DISABLED=1
+# or
+DO_NOT_TRACK=1
+```
+
+Either variable makes the analytics emitter a complete no-op — nothing is sent, nothing is written to disk. Telemetry is always synchronous in-memory and can never block a tool call or change its result.

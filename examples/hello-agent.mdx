@@ -1,0 +1,261 @@
+---
+title: "Hello Agent: Minimal Single-Step Sapiom Agent Example"
+sidebarTitle: "Hello Agent"
+description: "Walk through the hello-agent example — the smallest valid Sapiom agent, with one terminal step, compile-time transitions, and a Zod inputSchema."
+---
+
+The `hello-agent` example is the starting point for every Sapiom developer. It contains exactly one step, calls no capabilities, and costs nothing to run locally or in the cloud. Its purpose is to confirm that your MCP install, TypeScript compilation, and the build → deploy → run pipeline are all working before you reach for anything metered. Despite its simplicity, the code demonstrates every structural requirement of a Sapiom agent: `defineAgent`, `defineStep`, compile-time transition declarations, `inputSchema` as the public API, and the `terminate` directive.
+
+## What this example demonstrates
+
+<CardGroup cols={2}>
+  <Card title="defineAgent and defineStep" icon="puzzle-piece">
+    The two core authoring primitives from `@sapiom/agent`. Every Sapiom agent is a
+    graph of steps registered on a single `defineAgent` definition.
+  </Card>
+  <Card title="Compile-time transition safety" icon="shield-check">
+    Each step declares its allowed transitions in `next: []`. The return type is
+    derived from that array at compile time — an undeclared transition is a type
+    error, not a runtime surprise.
+  </Card>
+  <Card title="inputSchema as public API" icon="file-contract">
+    The `inputSchema` Zod object becomes the dashboard's "Run once" form. Fields
+    with `.default(...)` make zero-input runs possible — the platform renders
+    labelled inputs from the schema's `.describe(...)` annotations.
+  </Card>
+  <Card title="terminal: true and terminate" icon="flag-checkered">
+    A step marked `terminal: true` with an empty `next: []` ends the run. The
+    `terminate` directive carries the step's output to the run record.
+  </Card>
+</CardGroup>
+
+## Full source: `hello-agent/index.ts`
+
+```typescript
+import { defineAgent, defineStep, terminate } from "@sapiom/agent";
+import { z } from "zod/v4";
+
+/**
+ * Hello Agent — the minimal single-step Sapiom agent.
+ *
+ * The smallest valid definition: one terminal step, no capabilities. Use it to
+ * confirm your MCP install and the build → deploy → run path work end to end
+ * before reaching for a metered capability.
+ *
+ * Each step declares its allowed transitions (`next` / `terminal`); the return
+ * type is derived from them, so an undeclared transition is a compile error.
+ */
+
+/**
+ * The entry contract — this agent's public API, and what the dashboard "Run
+ * once" form renders its labelled fields from. `name` defaults to the greeting
+ * this scaffold ships with, so a zero-input run still produces a real result.
+ */
+const entryInput = z.object({
+  name: z.string().default("world").describe("Who to greet."),
+});
+
+const greet = defineStep({
+  name: "greet",
+  inputSchema: entryInput,
+  next: [],
+  terminal: true,
+  async run(input: { name?: string }, ctx) {
+    // Validate the input, defaulting to a friendly greeting when none is given.
+    const name =
+      typeof input?.name === "string" && input.name.trim().length > 0
+        ? input.name.trim()
+        : "world";
+    ctx.logger.info("greeting", { name });
+    return terminate({ greeting: `Hello, ${name}!` });
+  },
+});
+
+export const agent = defineAgent({
+  name: "hello-agent",
+  entry: "greet",
+  steps: { greet },
+});
+```
+
+## Key concepts explained
+
+### `defineStep` — the step definition
+
+Every step is created with `defineStep`. The object it accepts carries the step's:
+
+- **`name`** — stable slug used in the graph and in the dashboard trace view.
+- **`inputSchema`** — a Zod schema that validates and types `input` inside `run`. On the entry step, this is the agent's public API — the platform renders a form from it and passes the run's launch payload through it.
+- **`next`** — the array of step names this step is allowed to transition to. An empty array combined with `terminal: true` means the step ends the run. This array is the compile-time contract: returning `goto("someOtherStep", ...)` for a step not listed here is a TypeScript error.
+- **`terminal: true`** — marks this as a run-ending step.
+- **`run(input, ctx)`** — the step body. `input` is typed from `inputSchema` (or the output type of whatever step transitions here). `ctx` is the `AgentExecutionContext`, providing `ctx.logger`, `ctx.shared`, `ctx.sapiom`, and `ctx.executionId`.
+
+### `terminate` — ending a run
+
+The `terminate` directive closes the run and sets its terminal output record. Whatever object you pass to `terminate` is available in the run's output on the dashboard and via the API. There is no other way to end a terminal step — a step that returns `undefined` or throws will fail the run rather than completing it cleanly.
+
+### `inputSchema` defaults and zero-input runs
+
+Sapiom requires that a zero-input run (no payload, or `{}`) reaches a terminal state and produces something real. The way to satisfy this for entry-step inputs is Zod's `.default(...)`:
+
+```typescript
+const entryInput = z.object({
+  name: z.string().default("world").describe("Who to greet."),
+});
+```
+
+When the run is launched with no `name`, the schema supplies `"world"` and the step produces `{ greeting: "Hello, world!" }` — a real, honest result.
+
+<Warning>
+  Never use `throw new Error("field is required")` inside an entry step. An uncaught
+  throw fails the run rather than producing a readable terminal state. Route missing
+  or invalid inputs to a `rejected` terminal via `goto("rejected", { reason: "..." })`
+  instead.
+</Warning>
+
+### Compile-time graph safety
+
+The `next: []` declaration on `greet` tells the compiler this step never transitions anywhere — it can only `terminate`. If you changed the body to `return goto("someStep", {})`, the TypeScript compiler would surface a type error immediately, before any code runs. This is the core safety guarantee of the Sapiom authoring contract: the graph is checked at compile time, not at deploy time.
+
+### `defineAgent` — assembling the graph
+
+```typescript
+export const agent = defineAgent({
+  name: "hello-agent",
+  entry: "greet",
+  steps: { greet },
+});
+```
+
+`defineAgent` takes the agent's stable slug (`name`), its entry step name (`entry`), and the full step map (`steps`). The CLI and MCP read the named export to build, validate, and deploy the agent.
+
+<Note>
+  The file must export exactly one `defineAgent(...)` as a named or default export.
+  The CLI's `agents check` command validates this before allowing a deploy.
+</Note>
+
+## Running the example
+
+<Steps>
+  <Step title="Install dependencies">
+    ```bash
+    cd examples/hello-agent
+    npm install
+    ```
+  </Step>
+
+  <Step title="Type-check the agent">
+    Confirm the TypeScript compiles cleanly. This also validates the graph's
+    transition declarations:
+
+    ```bash
+    npm run typecheck
+    ```
+  </Step>
+
+  <Step title="Trace locally with the MCP (free, no cloud spend)">
+    From your coding agent (e.g. Claude Code), run the `sapiom_dev_agents_run_local`
+    MCP tool. It executes the full graph with all capabilities stubbed and streams
+    every step's input, output, and directive — useful for confirming control flow
+    before deploying.
+
+    ```bash
+    # First, add the MCP if you haven't already
+    claude mcp add sapiom -- npx -y @sapiom/mcp
+    ```
+
+    Then authenticate and check:
+
+    ```bash
+    # In your Claude Code session:
+    # sapiom_authenticate → sapiom_status → sapiom_dev_agents_check
+    # → sapiom_dev_agents_run_local
+    ```
+  </Step>
+
+  <Step title="Deploy and run on Sapiom">
+    ```bash
+    npx @sapiom/cli agents link    # registers the agent definition with the platform
+    npx @sapiom/cli agents deploy  # builds and deploys the current source
+    npx @sapiom/cli agents run     # triggers a run with default input
+    ```
+
+    Or equivalently, via the MCP: `sapiom_dev_agents_link` →
+    `sapiom_dev_agents_deploy` → `sapiom_dev_agents_run`.
+  </Step>
+
+  <Step title="Inspect the result">
+    Navigate to [app.sapiom.ai/agents](https://app.sapiom.ai/agents) and open the
+    `hello-agent` definition. Click into the run to see the step trace and the
+    terminal output:
+
+    ```json
+    { "greeting": "Hello, world!" }
+    ```
+  </Step>
+</Steps>
+
+## Adapting this example
+
+Because `hello-agent` has no capabilities or external dependencies, it's the best starting point for building your own agent. Common next steps:
+
+<Accordion title="Add a second step">
+  Introduce a `goto` transition to chain steps together. Add a step to `next`, return `goto("newStep", { ... })` from `run`, and register the new step in `defineAgent`:
+
+  ```typescript
+  const greet = defineStep({
+    name: "greet",
+    inputSchema: entryInput,
+    next: ["respond"],  // declare the transition
+    async run(input, ctx) {
+      return goto("respond", { name: input.name ?? "world" });
+    },
+  });
+
+  const respond = defineStep({
+    name: "respond",
+    next: [],
+    terminal: true,
+    async run(input: { name: string }) {
+      return terminate({ greeting: `Hello, ${input.name}!` });
+    },
+  });
+
+  export const agent = defineAgent({
+    name: "hello-agent",
+    entry: "greet",
+    steps: { greet, respond },
+  });
+  ```
+</Accordion>
+
+<Accordion title="Add a capability call">
+  Import a capability from `ctx.sapiom` inside a step's `run`. All capability calls are pre-authenticated to your tenant and automatically tracked in the dashboard. For example, sending an email:
+
+  ```typescript
+  async run(input, ctx) {
+    const name = input.name ?? "world";
+    const inboxId = "your-inbox-id";
+    await ctx.sapiom.email.messages.send(inboxId, {
+      to: "recipient@example.com",
+      subject: "Greeting",
+      text: `Hello, ${name}!`,
+    });
+    return terminate({ sent: true, to: "recipient@example.com" });
+  }
+  ```
+</Accordion>
+
+<Accordion title="Add shared state for multi-step runs">
+  For agents with multiple steps, `ctx.shared` persists values across steps (and across `pauseUntilSignal` pauses). Declare the shape in the generic parameter:
+
+  ```typescript
+  import type { AgentExecutionContext } from "@sapiom/agent";
+
+  interface Shared extends Record<string, unknown> {
+    name: string;
+  }
+
+  type Ctx = AgentExecutionContext<Shared>;
+  ```
+</Accordion>

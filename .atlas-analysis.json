@@ -1,0 +1,142 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Sapiom SDK",
+  "projectDescription": "A TypeScript/Node.js monorepo SDK for building, running, and operating AI agents on Sapiom — including authoring typed step graphs, calling cloud capabilities (sandboxes, models, repositories, storage, and more), and deploying via CLI, MCP, or Agent Studio.",
+  "theme": "luma",
+  "primaryColor": "#3ba33b",
+  "lightColor": "#1d571d",
+  "darkColor": "#040404",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Building Agents",
+            "pages": [
+              "guides/authoring-agents",
+              "guides/step-graph",
+              "guides/context-and-shared-state",
+              "guides/pausing-and-signals",
+              "guides/events-vs-signals"
+            ]
+          },
+          {
+            "group": "Capabilities",
+            "pages": [
+              "guides/capabilities-overview",
+              "guides/sandboxes",
+              "guides/models",
+              "guides/repositories",
+              "guides/storage-and-data",
+              "guides/integrations"
+            ]
+          },
+          {
+            "group": "Deploying & Operating",
+            "pages": [
+              "guides/deploy",
+              "guides/schedules",
+              "guides/agent-studio",
+              "guides/mcp-servers"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/overview",
+              "examples/hello-agent",
+              "examples/approval-chain",
+              "examples/fan-out-and-combine"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "@sapiom/agent",
+            "pages": [
+              "api/agent/overview",
+              "api/agent/define-agent",
+              "api/agent/define-step",
+              "api/agent/directives"
+            ]
+          },
+          {
+            "group": "@sapiom/tools",
+            "pages": [
+              "api/tools/overview",
+              "api/tools/create-client",
+              "api/tools/sandboxes",
+              "api/tools/models",
+              "api/tools/repositories",
+              "api/tools/capabilities"
+            ]
+          },
+          {
+            "group": "@sapiom/cli",
+            "pages": [
+              "api/cli/overview",
+              "api/cli/agents",
+              "api/cli/schedules"
+            ]
+          },
+          {
+            "group": "@sapiom/mcp",
+            "pages": [
+              "api/mcp/overview",
+              "api/mcp/tools"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "defineAgent / defineStep authoring contract with compile-time transition enforcement",
+    "pauseUntilSignal — durable step suspension across processes with zero compute cost while idle",
+    "Events vs signals — events start runs, signals resume paused ones",
+    "Typed capability client (@sapiom/tools) for sandboxes, coding models, repositories, file storage, email, search, memory, databases, and more",
+    "CLI for scaffold, validate, deploy, schedule, and operate agents",
+    "Local developer MCP server (sapiom-dev) for building agents from within a coding agent like Claude Code",
+    "Agent Studio — local web app with embedded coding agent terminal, live canvas, and one-click deploy",
+    "ctx.shared typed key/value store for cross-step state (256 KiB quota)",
+    "Multi-agent composition via agents.run / agents.launch and event triggers",
+    "Human-in-the-loop via pauseUntilSignal with arbitrary signal names and optional timeouts"
+  ],
+  "publicApiSurface": [
+    "defineAgent(options) — @sapiom/agent",
+    "defineStep(options) — @sapiom/agent",
+    "goto(step, payload) — @sapiom/agent",
+    "terminate(payload) — @sapiom/agent",
+    "fail(message) — @sapiom/agent",
+    "retry(options?) — @sapiom/agent",
+    "pauseUntilSignal(handle | options, opts) — @sapiom/agent",
+    "createClient({ apiKey }) — @sapiom/tools",
+    "sandboxes.create / attach / exec / writeFile / destroy — @sapiom/tools",
+    "models.run / models.coding.run / models.coding.launch — @sapiom/tools",
+    "repositories.create / get / pushFromSandbox — @sapiom/tools",
+    "fileStorage.getDownloadUrl — @sapiom/tools",
+    "contentGeneration.images.create — @sapiom/tools",
+    "search.webSearch / search.scrape — @sapiom/tools",
+    "agents.run / agents.launch — @sapiom/tools",
+    "schedules.create / list / cancel — @sapiom/tools",
+    "email, domains, database, memory, google, slack, linear, llm, decisions — @sapiom/tools",
+    "sapiom agents init / check / deploy — @sapiom/cli",
+    "sapiom agents emit / signal — @sapiom/cli",
+    "sapiom agents schedule create / list / cancel — @sapiom/cli",
+    "sapiom_dev_agents_scaffold / check / run_local / deploy / run / inspect — @sapiom/mcp",
+    "sapiom_dev_agents_signal / emit_event / schedule — @sapiom/mcp",
+    "sapiom_dev_sandbox_configure / preview / app_publish — @sapiom/mcp"
+  ]
+}

@@ -1,0 +1,267 @@
+---
+title: "models: Managed Loop and Coding Agent API Reference"
+sidebarTitle: "models"
+description: "API reference for the models namespace — managed loop run and launch, coding agent run and launch, ModelRunHandle, and result and error payload types."
+---
+
+The `models` namespace provides two agent-running primitives: `models.run`, which runs the managed loop (a prompt sent to a model with MCP tool access, returning text), and `models.coding`, which gives a natural-language task to a coding agent that edits files inside a sandbox. Both primitives offer a blocking `run` variant that polls to completion and a `launch` variant that returns a pausable handle you can pass to `pauseUntilSignal`. This page documents every method, parameter, handle method, and result type.
+
+## Import
+
+```typescript
+import { models } from "@sapiom/tools";
+// or with explicit client:
+import { createClient } from "@sapiom/tools";
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+// then: sapiom.models.*
+```
+
+## Choosing `run` vs `launch`
+
+<Tabs>
+  <Tab title="run (blocking)">
+    Polls to completion and returns the finished result. Use this for standalone scripts and inline calls where you want to wait for the result directly.
+
+    ```typescript
+    const run = await models.run({
+      prompt: "Summarize the open issues labelled `bug` in three bullets.",
+      system: "You are a concise triage assistant.",
+    });
+    if (run.status === "completed") console.log(run.output);
+    ```
+  </Tab>
+  <Tab title="launch (async handle)">
+    Returns immediately with a `ModelRunHandle`. Hand the handle to `pauseUntilSignal` to pause an agent step and resume when the run finishes, or poll it yourself with `handle.status()` / `handle.wait()`.
+
+    ```typescript
+    const handle = await models.launch({ prompt: "..." });
+    // Inside an agent step:
+    return pauseUntilSignal(handle, { resumeStep: "use-output" });
+    // Or standalone:
+    const result = await handle.wait();
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## `models.run(spec)`
+
+Run the managed loop and wait for it to complete. Returns a `ModelRunResult`.
+
+<ParamField body="prompt" type="string" required>
+  The user-turn message sent to the model.
+</ParamField>
+
+<ParamField body="system" type="string">
+  Optional. A system prompt prepended to the conversation.
+</ParamField>
+
+<ParamField body="model" type="ModelLabel">
+  Optional. A routing label (`"small"`, `"medium"`, `"large"`, `"smart"`). Omit to use the platform default. Never pass a raw provider model ID.
+</ParamField>
+
+<ParamField body="mcps" type="ModelMcp[]">
+  Optional. Streamable HTTP MCP servers whose tools the managed loop can call. Each entry takes a `url` and optional `headers` map.
+
+  ```typescript
+  mcps: [
+    {
+      url: "https://mcp.example.com/mcp",
+      headers: { authorization: `Bearer ${token}` },
+    },
+  ]
+  ```
+</ParamField>
+
+<ParamField body="deadlineMinutes" type="number">
+  Optional. How long you are willing to wait. The platform uses this to derive the billing tier. **The platform does not honor the deadline yet** — today all runs dispatch immediately regardless of this value.
+</ParamField>
+
+### Returns: `ModelRunResult`
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | `ModelRunStatus` | `"completed"`, `"failed"`, `"cancelled"`, `"timed_out"` |
+| `output` | `string \| undefined` | The model's final text reply (present on `"completed"`) |
+| `result` | object | Full result including turns, usage, `servedClass`, `warnings` |
+| `error` | `ModelRunError \| undefined` | Structured error (present on non-completed status) |
+
+---
+
+## `models.launch(spec)`
+
+Start the managed loop and return a `ModelRunHandle` immediately. Accepts the same parameters as `models.run`.
+
+### Returns: `ModelRunHandle`
+
+A handle with two methods:
+
+#### `handle.status()`
+
+Fetch the current run status. Returns a `ModelRunResult`. Retries up to three times on transient faults, then throws.
+
+#### `handle.wait(opts?)`
+
+Poll to completion and return the final `ModelRunResult`.
+
+<ParamField body="opts.timeoutMs" type="number">
+  Optional. Maximum milliseconds to wait before returning a `"timed_out"` result. Defaults to 10 minutes for `models` runs.
+</ParamField>
+
+---
+
+## `models.coding.run(spec)`
+
+Run a coding agent task in a sandbox and wait for it to complete. The coding agent is given the task in natural language, clones the repository (if provided) into the sandbox at `/workspace/<slug>`, and edits files. Returns a `CodingRunResult`.
+
+<ParamField body="task" type="string" required>
+  The natural-language task description given to the coding agent.
+</ParamField>
+
+<ParamField body="gitRepository" type="Repository">
+  Optional. A `Repository` object returned by `repositories.create()`, `repositories.get()`, or `repositories.list()`. The repository is cloned into the sandbox at `/workspace/<slug>` with push access. Without this, the coding agent works in an empty sandbox with nothing to push.
+</ParamField>
+
+<ParamField body="sandbox" type="Sandbox">
+  Optional. Pass a `Sandbox` returned from a previous coding run to chain runs in the same environment, reusing the same working directory and any previously installed dependencies.
+</ParamField>
+
+<ParamField body="workingDirectory" type="string">
+  Optional. Working directory relative to the run's workspace. Leave unset to default to the repository checkout (or a fresh per-run workspace). Used to point the coding agent at a subdirectory.
+</ParamField>
+
+<ParamField body="keepSandbox" type="boolean">
+  Optional. Defaults to `true`. When `false`, the sandbox is destroyed automatically when the run finishes. Set to `false` only if you do not need to read files or push from the sandbox afterward.
+</ParamField>
+
+<ParamField body="model" type="ModelLabel">
+  Optional. Routing label for the coding agent. Omit to use the platform default.
+</ParamField>
+
+<ParamField body="deadlineMinutes" type="number">
+  Optional. See the same field on `models.run`.
+</ParamField>
+
+### Returns: `CodingRunResult`
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | `string` | Terminal status of the run |
+| `result` | object | Includes `success: boolean` indicating whether the task completed |
+| `sandbox` | `Sandbox` | The live sandbox handle the coding agent ran in (usable after the run) |
+| `error` | `CodingRunHttpError \| undefined` | Structured HTTP error (if the run failed at the transport layer) |
+
+```typescript
+const run = await models.coding.run({
+  task: "Add a /health endpoint that returns 200 OK.",
+  gitRepository: repo,
+});
+
+if (run.result?.success) {
+  await repo.pushFromSandbox(run.sandbox, { message: "feat: health" });
+}
+
+// The sandbox is still live — read files, run commands, or push from it.
+const output = await run.sandbox.readFile("/workspace/api/server.js");
+```
+
+---
+
+## `models.coding.launch(spec)`
+
+Start a coding agent task and return a handle immediately. Accepts the same parameters as `models.coding.run`. Use inside an agent step to pause until the coding run finishes:
+
+```typescript
+const handle = await models.coding.launch({
+  task: "Refactor the auth module to use JWT.",
+  gitRepository: repo,
+});
+// Pause the step; "use-result" receives a CodingResultPayload as input.
+return pauseUntilSignal(handle, { resumeStep: "use-result" });
+```
+
+---
+
+## Signal constants
+
+`CODING_RESULT_SIGNAL` and `MODEL_RUN_RESULT_SIGNAL` are the signal names you declare on the static `pause` property of an agent step when pausing on a coding or model run handle. Import them from `@sapiom/tools`:
+
+```typescript
+import { CODING_RESULT_SIGNAL, MODEL_RUN_RESULT_SIGNAL } from "@sapiom/tools";
+
+const myStep = defineStep({
+  name: "run-coding-agent",
+  pause: { signal: CODING_RESULT_SIGNAL, resumeStep: "publish" },
+  async run(input, ctx) {
+    const handle = await ctx.sapiom.models.coding.launch({ task: "..." });
+    return pauseUntilSignal(handle, { resumeStep: "publish" });
+  },
+});
+```
+
+---
+
+## Result payload types
+
+When a step is resumed from a `pauseUntilSignal(codingHandle, ...)`, its input is typed as `CodingResultPayload`. Annotate the resumed step with this type instead of hand-rolling the shape:
+
+```typescript
+import type { CodingResultPayload } from "@sapiom/tools";
+
+const publish = defineStep({
+  name: "publish",
+  async run(input: CodingResultPayload, ctx) {
+    if (input.result?.success) {
+      const sandbox = sandboxes.attach(input.executionEnvironment.id);
+      await repo.pushFromSandbox(sandbox, { message: "auto: agent commit" });
+    }
+  },
+});
+```
+
+Similarly, `ModelRunResultPayload` types the resumed step input for a paused `models.launch` handle.
+
+---
+
+## Error handling
+
+Coding HTTP failures are structured. `models.coding.run`, `models.coding.launch`, `handle.status()`, and `handle.wait()` throw `CodingRunHttpError` on transport-layer failures. Inspect its properties:
+
+| Property | Description |
+|---|---|
+| `status` | HTTP status code |
+| `code` | Stable error code (e.g. `"repository_not_found"`) |
+| `requestId` | Platform request ID for support queries |
+| `body` | The raw response body |
+
+```typescript
+import { CodingRunHttpError } from "@sapiom/tools";
+
+try {
+  const run = await models.coding.run({ task, gitRepository: repo });
+} catch (error) {
+  if (error instanceof CodingRunHttpError) {
+    if (error.code === "repository_not_found") {
+      return fail(error.message);
+    }
+    throw error;
+  }
+}
+```
+
+---
+
+## Best practices
+
+<Accordion title="Keep exact, repeatable actions in your code">
+  Have the coding agent write code, and perform actions like git pushes or deploys in your own code using `repositories.pushFromSandbox`. The agent produces the changes; your code publishes them deterministically. A `result.success` of `true` means the run finished — not that anything was published.
+</Accordion>
+
+<Accordion title="Chain runs by reusing the sandbox">
+  Pass `spec.sandbox` to a follow-up coding run to chain runs in the same environment. The second run reuses the working directory, installed dependencies, and any changes the first run made.
+</Accordion>
+
+<Accordion title="Use launch + pauseUntilSignal from agent steps">
+  Inside an agent step, prefer `launch` over `run` for long coding tasks. `run` holds a socket open during the entire task (which can take several minutes). `launch` + `pauseUntilSignal` suspends the step and resumes from the completion webhook — no socket held, no polling, and not subject to rate limits.
+</Accordion>

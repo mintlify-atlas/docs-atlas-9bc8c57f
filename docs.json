@@ -1,72 +1,122 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Sapiom SDK",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#3ba33b",
+    "light": "#1d571d",
+    "dark": "#040404"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
+  "favicon": "https://media.brand.dev/d94e5f47-2b62-4092-8e68-9272fb5e6427.png",
   "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "light": "https://media.brand.dev/827513d6-7d74-4e53-aed4-d3904ca9db36.png",
+    "dark": "https://media.brand.dev/827513d6-7d74-4e53-aed4-d3904ca9db36.png"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:support@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/sapiom/sapiom-js"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/sapiom/sapiom-js"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Building Agents",
+            "pages": [
+              "guides/authoring-agents",
+              "guides/step-graph",
+              "guides/context-and-shared-state",
+              "guides/pausing-and-signals",
+              "guides/events-vs-signals"
+            ]
+          },
+          {
+            "group": "Capabilities",
+            "pages": [
+              "guides/capabilities-overview",
+              "guides/sandboxes",
+              "guides/models",
+              "guides/repositories",
+              "guides/storage-and-data",
+              "guides/integrations"
+            ]
+          },
+          {
+            "group": "Deploying & Operating",
+            "pages": [
+              "guides/deploy",
+              "guides/schedules",
+              "guides/agent-studio",
+              "guides/mcp-servers"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/overview",
+              "examples/hello-agent",
+              "examples/approval-chain",
+              "examples/fan-out-and-combine"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "@sapiom/agent",
+            "pages": [
+              "api/agent/overview",
+              "api/agent/define-agent",
+              "api/agent/define-step",
+              "api/agent/directives"
+            ]
+          },
+          {
+            "group": "@sapiom/tools",
+            "pages": [
+              "api/tools/overview",
+              "api/tools/create-client",
+              "api/tools/sandboxes",
+              "api/tools/models",
+              "api/tools/repositories",
+              "api/tools/capabilities"
+            ]
+          },
+          {
+            "group": "@sapiom/cli",
+            "pages": [
+              "api/cli/overview",
+              "api/cli/agents",
+              "api/cli/schedules"
+            ]
+          },
+          {
+            "group": "@sapiom/mcp",
+            "pages": [
+              "api/mcp/overview",
+              "api/mcp/tools"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

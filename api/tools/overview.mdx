@@ -1,0 +1,178 @@
+---
+title: "@sapiom/tools: Typed Capability Client Reference"
+sidebarTitle: "Overview"
+description: "Reference for @sapiom/tools — typed TypeScript client exposing Sapiom capabilities as callable namespaces: sandboxes, models, email, memory, and more."
+---
+
+The `@sapiom/tools` package is the programmable surface of the Sapiom platform. It exposes the exact same capabilities your agents invoke over MCP — sandboxes, repositories, managed model runs, file storage, email, memory, and more — as typed TypeScript namespaces you can call directly from your own code, from within an agent step, or from any Node.js script. This page covers installation, the two authentication modes, all available capability namespaces, subpath imports, usage analytics, and the `client.shutdown()` lifecycle method.
+
+## Installation
+
+```bash
+npm install @sapiom/tools
+# or
+pnpm add @sapiom/tools
+```
+
+## Authentication modes
+
+There are two ways to authenticate. Both expose an identical capability surface — choose the one that fits your usage context.
+
+<Tabs>
+  <Tab title="Explicit (standalone)">
+    Pass an API key to `createClient`. This is the right choice for standalone scripts, CI jobs, and any code running outside a Sapiom agent step.
+
+    ```typescript
+    import { createClient } from "@sapiom/tools";
+
+    const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+    await sapiom.sandboxes.create({ name: "demo" });
+    ```
+  </Tab>
+  <Tab title="Ambient (inside an agent step)">
+    Import capability namespaces directly from `@sapiom/tools`. Inside a Sapiom agent step the runtime injects credentials automatically; outside a step the package falls back to `SAPIOM_API_KEY` from the environment.
+
+    ```typescript
+    import { sandboxes, repositories, models } from "@sapiom/tools";
+
+    await sandboxes.create({ name: "demo" });
+    ```
+  </Tab>
+</Tabs>
+
+## Quickstart
+
+```typescript
+import { createClient } from "@sapiom/tools";
+
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+
+// Create a repo, have a coding agent build into it, then publish.
+const repo = await sapiom.repositories.create("landing-page");
+const run = await sapiom.models.coding.run({
+  task: "Build a one-page marketing site in index.html.",
+  gitRepository: repo,
+});
+
+if (run.result?.success) {
+  const { sha } = await repo.pushFromSandbox(run.sandbox, {
+    message: "build: landing",
+  });
+  console.log("published", sha);
+}
+```
+
+## Capability namespaces
+
+Every capability is a namespace importable from the barrel (`@sapiom/tools`) or its own subpath (e.g. `@sapiom/tools/sandboxes`). Each namespace has its own detailed reference page in this section.
+
+| Namespace | What it provides | Reference |
+|---|---|---|
+| `sandboxes` | Isolated, ephemeral compute | [sandboxes](/api/tools/sandboxes) |
+| `repositories` | Private, in-network git repos | [repositories](/api/tools/repositories) |
+| `models` | Managed loop (`models.run`) and coding agents (`models.coding`) | [models](/api/tools/models) |
+| `fileStorage` | Tenant-scoped object storage with presigned URLs | [capabilities](/api/tools/capabilities) |
+| `contentGeneration` | Image and video generation with optional storage persistence | [capabilities](/api/tools/capabilities) |
+| `search` | Web search (`webSearch`), page reading (`scrape`), email lookup (`emailSearch`) | [capabilities](/api/tools/capabilities) |
+| `agents` | Run a deployed agent or dispatch from a step | [capabilities](/api/tools/capabilities) |
+| `schedules` | Cron and one-off triggers for deployed agents | [capabilities](/api/tools/capabilities) |
+| `events` | Emit tenant events that trigger matching agent definitions | [capabilities](/api/tools/capabilities) |
+| `database` | Permanent Postgres databases with direct connection credentials | [capabilities](/api/tools/capabilities) |
+| `email` | Inboxes, messages, sending domains, threads, and webhooks | [capabilities](/api/tools/capabilities) |
+| `domains` | Domain registration and DNS record management | [capabilities](/api/tools/capabilities) |
+| `memory` | Namespace-isolated append-log with semantic/keyword/hybrid recall | [capabilities](/api/tools/capabilities) |
+| `connectors.google` | Drive, Gmail, and raw OAuth proxy for the tenant's Google account | [capabilities](/api/tools/capabilities) |
+| `connectors.github` | List a tenant's GitHub repositories | [capabilities](/api/tools/capabilities) |
+| `connectors.slack` | Post, edit, react to Slack messages; read threads and users | [capabilities](/api/tools/capabilities) |
+| `connectors.linear` / `connectors.notion` | Call MCP tools on a tenant's Linear, Notion, or custom MCP connector | [capabilities](/api/tools/capabilities) |
+| `llm` | Routed LLM calls: one-shot `run`, deferred `submit`, and sessions | [capabilities](/api/tools/capabilities) |
+| `decisions` | System One decisions: calibrated probabilities over a fixed answer set | [capabilities](/api/tools/capabilities) |
+
+## Subpath imports
+
+Every namespace is tree-shakable via its own subpath. Import from the subpath when you want to load only one capability:
+
+```typescript
+import { sandboxes } from "@sapiom/tools/sandboxes";
+import { repositories } from "@sapiom/tools/repositories";
+import { models } from "@sapiom/tools/models";
+```
+
+The subpath and barrel re-exports are identical in behaviour; the subpath just avoids bundling the entire package when you only need one capability.
+
+## Composing capabilities
+
+Capabilities are designed to work together. The most common composition is a coding run followed by a repository push — the coding agent writes the files, and your code commits and publishes them deterministically:
+
+```typescript
+import { repositories, models } from "@sapiom/tools";
+
+const repo = await repositories.create("api");
+const run = await models.coding.run({
+  task: "Add a /health endpoint that returns 200 OK.",
+  gitRepository: repo,
+});
+if (run.result?.success) {
+  await repo.pushFromSandbox(run.sandbox, { message: "feat: health" });
+}
+```
+
+Another built-in composition: pass `storage` to `contentGeneration.images.create` and each generated image is persisted to `fileStorage` inline — no extra round-trip needed:
+
+```typescript
+const out = await contentGeneration.images.create({
+  prompt: "a logo",
+  storage: { visibility: "private" },
+});
+const { downloadUrl } = await fileStorage.getDownloadUrl(out.images![0].fileId!);
+```
+
+## Usage analytics
+
+The SDK can emit anonymous, per-capability analytics events (one `capability.call` event per request). Each event carries the capability name, the request URL path (query strings are stripped), HTTP status, duration, and request size — never request or response bodies. Analytics describe calls to Sapiom's own API only; nothing is captured about third-party traffic.
+
+By default nothing is sent anywhere. Opt out at any time:
+
+```bash
+SAPIOM_TELEMETRY_DISABLED=1
+# or
+DO_NOT_TRACK=1
+```
+
+<Note>
+  Delivery is batched in the background and can never throw, block, or slow a capability call. One-shot scripts do not need to call `shutdown()` — buffered events flush automatically on process exit.
+</Note>
+
+## client.shutdown()
+
+If your process constructs many clients over its lifetime (one per execution, for example), call `client.shutdown()` when you are done with each one. It flushes any buffered analytics events and detaches the emitter's process exit hook.
+
+```typescript
+const sapiom = createClient({ apiKey: process.env.SAPIOM_API_KEY });
+try {
+  await sapiom.sandboxes.create({ name: "job" });
+  // ... do work
+} finally {
+  await sapiom.shutdown();
+}
+```
+
+`shutdown()` is idempotent, never rejects, and resolves immediately when there is nothing to release. It covers every client derived from the same root via `withAttribution(...)`. Capability calls made after shutdown still work; they just no longer emit analytics.
+
+<CardGroup cols={2}>
+  <Card title="createClient" icon="key" href="/api/tools/create-client">
+    Authentication options, attribution, transport security, and `createClientFromEnv`.
+  </Card>
+  <Card title="sandboxes" icon="box" href="/api/tools/sandboxes">
+    Isolated ephemeral compute: create, exec, file operations, streaming, and destroy.
+  </Card>
+  <Card title="models" icon="cpu" href="/api/tools/models">
+    Managed loop and coding agent API: run, launch, and result handles.
+  </Card>
+  <Card title="repositories" icon="git-branch" href="/api/tools/repositories">
+    Private git repos: create, attach, and push from a sandbox.
+  </Card>
+  <Card title="All Capabilities" icon="grid" href="/api/tools/capabilities">
+    email, memory, search, decisions, llm, domains, database, and more.
+  </Card>
+</CardGroup>

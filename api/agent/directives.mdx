@@ -1,0 +1,531 @@
+---
+title: "Agent Directives: goto, terminate, fail, retry, pauseUntilSignal"
+sidebarTitle: "Directives"
+description: "The five directive constructors a step's run() may return, their branded types, the wire interface hierarchy, and the guard functions the engine uses to inspect them."
+---
+
+Directives are the load-bearing protocol of the Sapiom agent primitive. When a step's `run()` function returns, it returns exactly one directive — a plain object with a `kind` field and type-specific fields — that tells the runner what to do next. The five directives cover every routing outcome: advance to another step, finalize successfully, finalize with a deterministic failure, retry this step, or pause until an external signal arrives. This page documents each constructor, its parameters, the branded type it returns, and the guard function the engine uses to inspect it.
+
+## Directive Type Hierarchy
+
+```typescript
+type NextStepDirective =
+  | ContinueDirective       // kind: 'continue'
+  | RetryDirective          // kind: 'retry'
+  | PauseUntilSignalDirective // kind: 'pause_until_signal'
+  | TerminateDirective      // kind: 'terminate'
+  | FailDirective;          // kind: 'fail'
+```
+
+The `DIRECTIVE_KIND` constant is the single source of truth for all kind strings:
+
+```typescript
+const DIRECTIVE_KIND = {
+  CONTINUE:           'continue',
+  RETRY:              'retry',
+  PAUSE_UNTIL_SIGNAL: 'pause_until_signal',
+  TERMINATE:          'terminate',
+  FAIL:               'fail',
+} as const;
+```
+
+### Branded vs Wire Types
+
+Each directive has two representations:
+
+- **Wire interfaces** (`ContinueDirective`, `TerminateDirective`, etc.) — the pure-data shapes the engine validates in completion payloads. Used by framework code and guard functions.
+- **Branded constructors** (`Goto<Target>`, `Terminate`, `Fail`, `Pause<Resume>`, `Retry`) — carry step names as type parameters so `Allowed<…>` can enforce declared transitions at compile time. Assignable to the corresponding wire interface.
+
+Authors call the constructor functions (`goto`, `terminate`, `fail`, `retry`, `pauseUntilSignal`) inside `run()` and never construct the objects manually.
+
+---
+
+## `goto`
+
+Route to the next step, passing an optional payload as that step's input.
+
+### Signature
+
+```typescript
+function goto<const Target extends string>(
+  target: Target,
+  output?: unknown
+): Goto<Target>
+```
+
+### `Goto<Target>` Type
+
+```typescript
+interface Goto<Target extends string> {
+  readonly kind: 'continue';
+  readonly stepName: Target;
+  readonly input?: unknown;
+}
+```
+
+`output` is **both** this step's audit output (persisted to the step execution row) and the next step's input. When omitted, the next step receives `undefined`.
+
+### Guard
+
+```typescript
+function isContinue(d: NextStepDirective): d is ContinueDirective
+```
+
+### Declaration Requirement
+
+`goto("X", ...)` is only assignable to the `run` return type when `"X"` appears in the step's `next` array. Any other target is a TypeScript compile error.
+
+### Example
+
+```typescript
+import { defineStep, goto } from "@sapiom/agent";
+
+const analyze = defineStep({
+  name: "analyze",
+  next: ["report", "escalate"],
+  async run(input, ctx) {
+    const result = await runAnalysis(input.data);
+
+    if (result.severity === "high") {
+      return goto("escalate", { finding: result });
+    }
+    return goto("report", { summary: result.summary });
+  },
+});
+```
+
+---
+
+## `terminate`
+
+Finalize the agent run as successfully completed.
+
+### Signature
+
+```typescript
+function terminate(output?: unknown, opts?: { reason?: string }): Terminate
+```
+
+### `Terminate` Type
+
+```typescript
+interface Terminate {
+  readonly kind: 'terminate';
+  readonly output?: unknown;
+  readonly reason?: string;
+}
+```
+
+`output` becomes the workflow's final output — persisted to the execution row and returned to any caller that awaits the run. `reason` is a short human-readable label for logs and dashboards.
+
+### Guard
+
+```typescript
+function isTerminate(d: NextStepDirective): d is TerminateDirective
+```
+
+### Declaration Requirement
+
+`terminate()` is only assignable to the `run` return type when the step declares `terminal: true`. Calling it without that declaration is a compile error.
+
+### Example
+
+```typescript
+import { defineStep, terminate } from "@sapiom/agent";
+
+const finish = defineStep({
+  name: "finish",
+  next: [],
+  terminal: true,
+  async run(input, ctx) {
+    await recordCompletion(input.jobId);
+    return terminate(
+      { jobId: input.jobId, completedAt: new Date().toISOString() },
+      { reason: "job-complete" }
+    );
+  },
+});
+```
+
+---
+
+## `fail`
+
+Finalize the agent run as deterministically failed, without consuming the retry budget.
+
+### Signature
+
+```typescript
+function fail(reason?: string, opts?: { output?: unknown }): Fail
+```
+
+### `Fail` Type
+
+```typescript
+interface Fail {
+  readonly kind: 'fail';
+  readonly reason?: string;
+  readonly output?: unknown;
+}
+```
+
+`reason` is a short human label for logs and dashboards. `output` carries structured failure context — the step's audit output is preserved so callers can read which sub-task failed, why, and what was produced before the abort.
+
+### Guard
+
+```typescript
+function isFail(d: NextStepDirective): d is FailDirective
+```
+
+### Declaration Requirement
+
+`fail()` is only assignable to the `run` return type when the step declares `canFail: true`.
+
+### When to Use `fail()` vs Throwing
+
+<Tabs>
+  <Tab title="Use fail()">
+    Use `fail()` for **known-terminal failures** you have already diagnosed — the coding agent reported `success: false`, a required resource doesn't exist, the input is structurally invalid after parsing. One CAS write, one log line, one failure event. No retries wasted.
+
+    ```typescript
+    const verify = defineStep({
+      name: "verify",
+      next: [],
+      canFail: true,
+      terminal: true,
+      async run(input, ctx) {
+        const report = await verifyCode(input.prUrl);
+        if (!report.passed) {
+          return fail("verification-failed", {
+            output: { checks: report.failedChecks },
+          });
+        }
+        return terminate({ verdict: "passed" });
+      },
+    });
+    ```
+  </Tab>
+  <Tab title="Use throw">
+    Use `throw` for **unexpected, potentially transient errors** — network blips, race conditions, transient downstream service errors. The runner will retry up to `maxAttemptsPerStep` (default 3) before marking the execution as failed.
+
+    ```typescript
+    const fetch = defineStep({
+      name: "fetch",
+      next: ["process"],
+      async run(input, ctx) {
+        // This may throw on a network error — the runner will retry
+        const data = await externalApi.get(input.resourceId);
+        return goto("process", { data });
+      },
+    });
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+Using `throw` for terminal failures wastes the retry budget and produces misleading "retry" log noise. Using `fail()` for transient errors removes the self-heal safety net. Match the directive to the failure mode.
+</Warning>
+
+<Note>
+**Cleanup before `fail()`**: `fail()` ends the execution immediately. Any cleanup steps (sandbox teardown, file cleanup) must run before the `fail()` directive fires. The standard pattern is to stash a "this run failed" flag in `ctx.shared`, run cleanup steps unconditionally, and emit `fail()` only from the final step after inspecting the flag.
+</Note>
+
+### Example
+
+```typescript
+import { defineStep, fail, terminate } from "@sapiom/agent";
+
+const deploy = defineStep({
+  name: "deploy",
+  next: [],
+  terminal: true,
+  canFail: true,
+  async run(input, ctx) {
+    const result = await runDeployment(input.artifactId);
+    if (!result.success) {
+      return fail(`deployment-failed: ${result.errorCode}`, {
+        output: { artifactId: input.artifactId, logs: result.logUrl },
+      });
+    }
+    return terminate({ deploymentId: result.id, url: result.url });
+  },
+});
+```
+
+---
+
+## `retry`
+
+Re-run this step, optionally after a delay.
+
+### Signature
+
+```typescript
+function retry(opts?: { delayMs?: number; reason?: string }): Retry
+```
+
+### `Retry` Type
+
+```typescript
+interface Retry {
+  readonly kind: 'retry';
+  readonly delayMs?: number;
+  readonly reason?: string;
+}
+```
+
+`delayMs` sets a delay before the step is re-executed. `reason` is a human label for the retry entry in logs and dashboards.
+
+### Guard
+
+```typescript
+function isRetry(d: NextStepDirective): d is RetryDirective
+```
+
+### Declaration Requirement
+
+`retry()` is **always allowed** — it is the only directive that does not require a matching declaration. The engine caps total attempts at `maxAttemptsPerStep` (default 3). Exceeding the cap throws `RetryLimitExceededError` and finalizes the run as failed.
+
+### Example
+
+```typescript
+import { defineStep, goto, retry } from "@sapiom/agent";
+
+const callApi = defineStep({
+  name: "callApi",
+  next: ["process"],
+  async run(input, ctx) {
+    const res = await fetch(input.endpoint);
+    if (res.status === 429) {
+      const retryAfter = Number(res.headers.get("Retry-After") ?? "5") * 1000;
+      return retry({ delayMs: retryAfter, reason: "rate-limited" });
+    }
+    const data = await res.json();
+    return goto("process", { data });
+  },
+});
+```
+
+---
+
+## `pauseUntilSignal`
+
+Pause the execution until an external signal arrives, then resume at a declared step.
+
+### Signatures
+
+```typescript
+// Form 1: Explicit args (synchronous) — for human gates or external webhooks
+function pauseUntilSignal<const Resume extends string>(args: {
+  signal: string;
+  resumeStep?: Resume;
+  correlationId?: string;
+  timeoutMs?: number;
+  output?: unknown;
+}): Pause<Resume>
+
+// Form 2: DispatchHandle or launch Promise (async) — for Sapiom capabilities
+function pauseUntilSignal<const Resume extends string>(
+  handle: DispatchHandle | Promise<DispatchHandle>,
+  opts?: { resumeStep?: Resume; timeoutMs?: number; output?: unknown },
+): Promise<Pause<Resume>>
+```
+
+### `Pause<Resume>` Type
+
+```typescript
+interface Pause<Resume extends string> {
+  readonly kind: 'pause_until_signal';
+  readonly signal: {
+    readonly name: string;
+    readonly correlationId?: string;
+  };
+  readonly resumeStep?: Resume;
+  readonly timeoutMs?: number;
+  readonly output?: unknown;
+}
+```
+
+### `PauseUntilSignalDirective` (Wire Interface)
+
+```typescript
+interface PauseUntilSignalDirective {
+  readonly kind: 'pause_until_signal';
+  readonly signal: {
+    readonly name: string;
+    readonly correlationId?: string;
+  };
+  readonly timeoutMs?: number;
+  readonly resumeStep?: string;
+}
+```
+
+### Guard
+
+```typescript
+function isPause(d: NextStepDirective): d is PauseUntilSignalDirective
+```
+
+### `Pause` Fields
+
+<ParamField path="signal" type="string" required>
+  The signal name to wait for. Must match the `signal` value in the step's `pause` declaration. For capability handles (Form 2), this is read automatically from `handle.dispatch.resultSignal`.
+</ParamField>
+
+<ParamField path="resumeStep" type="string">
+  The step to run when the signal arrives. Must match the `resumeStep` value in the step's `pause` declaration — a mismatch is a compile error. Defaults to the pausing step itself when omitted.
+</ParamField>
+
+<ParamField path="correlationId" type="string">
+  The delivery matching key. `signal()` wakes every run paused on this exact `(name, correlationId)` pair. When omitted, the runner fills in `ctx.executionId` — making the waiter unique to this run. Pass a shared business key (order ID, customer ID) to have multiple runs wake together from one delivery.
+</ParamField>
+
+<ParamField path="timeoutMs" type="number">
+  Deadline for the pause. When the deadline lapses, the run ends as a pause timeout rather than resuming. Always set this for gates a human might never answer.
+</ParamField>
+
+<ParamField path="output" type="unknown">
+  Optional audit output recorded for the pausing step's execution row.
+</ParamField>
+
+### Declaration Requirement
+
+`pauseUntilSignal()` is only assignable to the `run` return type when the step declares a `pause` edge. The `resumeStep` literal in the directive must match the one in the declaration.
+
+### Form 1: External Signal (Human Gate / Webhook)
+
+```typescript
+import { defineStep, pauseUntilSignal, goto } from "@sapiom/agent";
+
+const present = defineStep({
+  name: "present",
+  next: ["finalize"],
+  pause: { signal: "approval.decision", resumeStep: "finalize" },
+  async run(input, ctx) {
+    await notifyReviewer({
+      draftId: input.draftId,
+      reviewUrl: `https://app.example.com/review/${ctx.executionId}`,
+    });
+    return pauseUntilSignal({
+      signal: "approval.decision",
+      resumeStep: "finalize",
+      correlationId: ctx.executionId, // unique to this run
+      timeoutMs: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+  },
+});
+
+const finalize = defineStep({
+  name: "finalize",
+  next: [],
+  terminal: true,
+  // Resumed step receives the signal payload as input — use optional fields
+  async run(input: { approved?: boolean; comment?: string }, ctx) {
+    return terminate({ approved: input.approved ?? false });
+  },
+});
+```
+
+### Form 2: Dispatched Capability Handle
+
+Pass the launch handle (or its promise) directly. `pauseUntilSignal` reads the signal name and correlation ID from `handle.dispatch` automatically:
+
+```typescript
+import { defineStep, pauseUntilSignal, terminate } from "@sapiom/agent";
+import { CODING_RESULT_SIGNAL } from "@sapiom/tools";
+
+const code = defineStep({
+  name: "code",
+  next: ["review"],
+  pause: { signal: CODING_RESULT_SIGNAL, resumeStep: "review" },
+  async run(input, ctx) {
+    // Await the launch to stash the run ID before pausing
+    const run = await ctx.sapiom.models.coding.launch({ task: input.task });
+    ctx.shared.set("codingRunId", run.runId);
+    return pauseUntilSignal(run, { resumeStep: "review" });
+  },
+});
+
+const review = defineStep({
+  name: "review",
+  next: [],
+  terminal: true,
+  async run(result, ctx) {
+    // result is the coding capability's result payload
+    return terminate({ ok: result.status === "completed" });
+  },
+});
+```
+
+<Note>
+You can also pass the launch promise directly for a one-liner — the async-return flattening makes the sync/async distinction invisible at the call site:
+
+```typescript
+return pauseUntilSignal(
+  ctx.sapiom.models.coding.launch({ task: input.task }),
+  { resumeStep: "review" }
+);
+```
+</Note>
+
+### Compatible Capabilities
+
+Any capability whose `launch` returns a `DispatchHandle` (a `dispatch` member) is pausable. Each ships a stable result-signal constant for the `pause` declaration.
+
+| Capability | Launch | Pause Signal |
+|------------|--------|--------------|
+| Coding agent | `ctx.sapiom.models.coding.launch(…)` | `CODING_RESULT_SIGNAL` (`@sapiom/tools`) |
+
+---
+
+## Guard Functions Reference
+
+All five guards accept a `NextStepDirective` and narrow to the specific directive type:
+
+```typescript
+import {
+  isContinue,
+  isRetry,
+  isPause,
+  isTerminate,
+  isFail,
+} from "@sapiom/agent";
+
+function describeDirective(d: NextStepDirective): string {
+  if (isContinue(d))   return `goto ${d.stepName}`;
+  if (isRetry(d))      return `retry (delay: ${d.delayMs ?? 0}ms)`;
+  if (isPause(d))      return `pause on ${d.signal.name}`;
+  if (isTerminate(d))  return `terminate`;
+  if (isFail(d))       return `fail: ${d.reason ?? "(no reason)"}`;
+  // TypeScript knows this is unreachable:
+  const _: never = d;
+  return "unknown";
+}
+```
+
+<Note>
+Use structural guards (`isContinue`, `isTerminate`, etc.) rather than parsing `kind` strings or using `instanceof`. Guard functions are the correct cross-bundle, cross-process recognition mechanism — a runner and a definition may carry separate inlined SDK copies with separate class references.
+</Note>
+
+---
+
+## Directive Summary Table
+
+| Constructor | Declaration Required | Guard | `kind` |
+|-------------|---------------------|-------|--------|
+| `goto(target, output?)` | `next: [target]` | `isContinue` | `'continue'` |
+| `terminate(output?, opts?)` | `terminal: true` | `isTerminate` | `'terminate'` |
+| `fail(reason?, opts?)` | `canFail: true` | `isFail` | `'fail'` |
+| `retry(opts?)` | *(none — always allowed)* | `isRetry` | `'retry'` |
+| `pauseUntilSignal(args)` | `pause: { signal, resumeStep }` | `isPause` | `'pause_until_signal'` |
+
+## See Also
+
+<CardGroup cols={2}>
+  <Card title="defineStep" href="/api/agent/define-step" icon="function">
+    How to declare transitions and wire directives into the `Allowed` return type.
+  </Card>
+  <Card title="defineAgent" href="/api/agent/define-agent" icon="box">
+    Assembling steps into a complete agent definition.
+  </Card>
+</CardGroup>

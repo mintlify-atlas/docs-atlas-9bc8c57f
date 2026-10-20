@@ -1,0 +1,134 @@
+---
+title: "@sapiom/cli: Sapiom Command Line Interface Reference"
+sidebarTitle: "Overview"
+description: "Install and invoke the Sapiom CLI to scaffold agents, launch Agent Studio, deploy to the cloud, and manage triggers — all from your terminal."
+---
+
+The Sapiom CLI (`@sapiom/cli`) is the primary command-line interface for working with Sapiom agents. It covers the full developer loop: scaffolding a new project, validating and deploying agent code, managing scheduled triggers, and launching Agent Studio — a local coding environment with MCP pre-wired and your agent running in an embedded terminal.
+
+## Installation
+
+Install the CLI globally with npm, or run it on demand with `npx` — no global install required for one-off use.
+
+<Tabs>
+  <Tab title="Global install">
+    ```bash
+    npm install -g @sapiom/cli
+    ```
+
+    After installing globally, invoke every command as `sapiom <command>`.
+  </Tab>
+  <Tab title="npx (no install)">
+    ```bash
+    npx @sapiom/cli <command>
+    ```
+
+    Useful in CI environments or when you want to run a specific version without committing to a global install.
+  </Tab>
+</Tabs>
+
+## Top-level commands
+
+The CLI exposes two top-level commands.
+
+<CardGroup cols={2}>
+  <Card title="sapiom agents" icon="robot">
+    Scaffold, validate, deploy, and operate agents. Includes subcommands for emitting events, sending signals, and managing schedules.
+  </Card>
+  <Card title="sapiom dev" icon="code">
+    Launch Agent Studio — a local browser-based coding environment with MCP pre-wired and an embedded terminal running your agent.
+  </Card>
+</CardGroup>
+
+## sapiom dev — Agent Studio
+
+`sapiom dev` opens the Agent Studio harness in a local browser window. The harness wires the `sapiom-dev` MCP server automatically and runs your agent project in an embedded terminal, giving you a live coding loop without any manual MCP configuration.
+
+```bash
+sapiom dev [dir]          # open Agent Studio in the current (or given) directory
+sapiom dev --port 4200    # listen on a custom port instead of the default
+sapiom dev --no-open      # start the server without automatically opening a browser tab
+```
+
+<Note>
+  `sapiom dev` requires `@sapiom/harness` to be installed separately. Install it once with:
+
+  ```bash
+  npm install -g @sapiom/harness
+  ```
+</Note>
+
+### Flags
+
+<ParamField path="dir" type="string">
+  Optional path to the agent project directory. Defaults to the current working directory.
+</ParamField>
+
+<ParamField path="--port" type="number">
+  Override the default HTTP port that Agent Studio listens on.
+</ParamField>
+
+<ParamField path="--no-open" type="flag">
+  Suppress the automatic browser launch. The URL is still printed to stdout so you can open it manually.
+</ParamField>
+
+## sapiom agents — Agent lifecycle
+
+The `agents` group covers every stage of the agent lifecycle. See the [agents reference](/api/cli/agents) for full subcommand documentation and flag details.
+
+```bash
+sapiom agents init my-app    # scaffold a new agent project
+sapiom agents check          # validate locally (bundle, manifest, graph)
+sapiom agents deploy         # build and ship to Sapiom cloud
+```
+
+<Tip>
+  Every `sapiom agents` subcommand accepts `--json` to emit machine-readable JSON on stdout. Use this flag in CI pipelines or when piping output to other tools.
+</Tip>
+
+## sapiom agents schedule — Triggers and schedules
+
+The `schedule` subgroup lets you attach recurring or one-off triggers to any deployed agent. See the [schedule reference](/api/cli/schedules) for the complete command set.
+
+```bash
+sapiom agents schedule create my-app --cron "0 9 * * 1-5" --timezone America/New_York
+sapiom agents schedule list my-app
+sapiom agents schedule cancel <scheduleId>
+```
+
+## Usage analytics
+
+The CLI collects anonymous usage telemetry through `@sapiom/analytics-core`. Each command execution emits a single `command.run` event that records:
+
+- The **command name** that was run
+- The **flag names** that were passed (never their values or positional arguments)
+- The **duration** of the command
+- The **exit status** (success or error class)
+
+No argument values, file contents, or personally identifiable information are ever captured. Analytics delivery is best-effort and can never block or slow down a command — on process exit, a final flush is bounded by a 5-second timeout and retries never hold the process open.
+
+<Note>
+  Nothing is currently sent anywhere. When delivery is enabled in a future release, the data listed above is what will be transmitted.
+</Note>
+
+### Opting out
+
+Disable all telemetry at any time by setting either of the following environment variables before running any command:
+
+```bash
+SAPIOM_TELEMETRY_DISABLED=1 sapiom agents deploy
+# or
+DO_NOT_TRACK=1 sapiom agents deploy
+```
+
+Either variable makes the analytics emitter a complete no-op — nothing is sent, nothing is written to disk.
+
+## Getting help
+
+Run `--help` on any command or subcommand to see its full usage:
+
+```bash
+sapiom --help
+sapiom agents --help
+sapiom agents schedule --help
+```

@@ -1,0 +1,568 @@
+---
+title: "Additional Capabilities: Email, Search, Memory, and More"
+sidebarTitle: "All Capabilities"
+description: "Reference for @sapiom/tools extra namespaces: file storage, media generation, web search, email, database, memory, connectors, routed LLM, and decisions."
+---
+
+`@sapiom/tools` ships more than a dozen capability namespaces beyond sandboxes, repositories, and models. This page covers every remaining namespace — file storage, media generation, web search, deployed agent dispatch, scheduling, tenant events, Postgres databases, transactional email, domain registration, long-term memory, third-party connectors (Google, GitHub, Slack, MCP), routed LLM calls, and System One decisions. Each namespace is importable from the barrel or its own subpath.
+
+## fileStorage
+
+Tenant-scoped object storage with presigned URLs. `fileStorage` hands you upload and download URLs — it never transfers file bytes itself. You `PUT` to the upload URL and `GET` from the download URL in your own code.
+
+```typescript
+import { fileStorage } from "@sapiom/tools";
+
+// 1. Request a presigned upload URL.
+const { fileId, uploadUrl, requiredHeaders } = await fileStorage.upload({
+  contentType: "image/png",
+  fileName: "photo.png",
+  visibility: "private", // or "public"
+  fileSize: bytes.byteLength, // required — size in bytes
+});
+
+// 2. PUT the bytes to the upload URL (requiredHeaders must be included).
+await fetch(uploadUrl, {
+  method: "PUT",
+  headers: requiredHeaders,
+  body: bytes,
+});
+
+// 3. Later: get a presigned download URL, list, change visibility, or delete.
+const { downloadUrl } = await fileStorage.getDownloadUrl(fileId);
+const { files } = await fileStorage.list({ limit: 50 });
+await fileStorage.setVisibility(fileId, "public");
+await fileStorage.delete(fileId); // idempotent
+```
+
+<Note>
+  `fileSize` on the `upload()` input is a `number` and is required. `fileSize` on returned file metadata is a `string` (to avoid JS `Number` precision loss on large files). Guard `connection` fields accordingly.
+</Note>
+
+---
+
+## contentGeneration
+
+Generate images and video with an optional `storage` param that persists each output to your tenant's `fileStorage` inline — no extra round-trip — returning a durable `fileId` alongside the provider URL.
+
+<Tabs>
+  <Tab title="Images">
+    ```typescript
+    import { contentGeneration, fileStorage } from "@sapiom/tools";
+
+    const out = await contentGeneration.images.create({
+      prompt: "a minimalist logo with a gradient background",
+      storage: { visibility: "private" }, // optional — persists to fileStorage
+    });
+
+    out.images[0].fileId;     // durable reference (present when storage passed)
+    out.images[0].downloadUrl; // short-lived presigned URL for the stored file
+    out.images[0].url;         // provider-hosted URL (may be short-lived)
+
+    // Re-mint a fresh download URL at any time:
+    const { downloadUrl } = await fileStorage.getDownloadUrl(out.images[0].fileId!);
+    ```
+  </Tab>
+  <Tab title="Video">
+    ```typescript
+    import { contentGeneration } from "@sapiom/tools";
+
+    // Dispatchable: returns a handle immediately; poll or pause on it.
+    const handle = await contentGeneration.video.launch({
+      prompt: "a timelapse of a city skyline at dusk",
+      storage: { visibility: "public" },
+    });
+    const result = await handle.wait();
+    result.video?.fileId;
+    result.video?.downloadUrl;
+    ```
+  </Tab>
+</Tabs>
+
+`images.launch` and `video.launch` are the dispatchable counterparts — they return a handle rather than holding the request open, making them safe for long generations and for agent steps you want to pause rather than block.
+
+---
+
+## search
+
+Search the web, read a page, and look up professional email addresses.
+
+<Accordion title="webSearch — search the web">
+  ```typescript
+  import { search } from "@sapiom/tools";
+
+  const hits = await search.webSearch({ query: "what is an LLM agent?" });
+  hits.answer;   // synthesized answer (intent: "answer", the default)
+  hits.results;  // [{ title, url, snippet }, …]
+
+  // For a list of links instead of a synthesized answer:
+  const links = await search.webSearch({
+    query: "best practices for prompt caching",
+    intent: "links",
+    depth: "deep",
+  });
+  ```
+
+  Key options: `query` (required), `depth` (`"standard"` | `"deep"`), `intent` (`"answer"` | `"links"`).
+</Accordion>
+
+<Accordion title="scrape — read a page">
+  ```typescript
+  const page = await search.scrape({ url: "https://example.com" });
+  page.markdown;        // page content as markdown
+  page.metadata.title;  // page title
+
+  // Request multiple formats at once:
+  const full = await search.scrape({
+    url: "https://example.com",
+    formats: ["markdown", "html", "links"],
+    onlyMainContent: true,
+    maxAge: 0,           // 0 = always read fresh (slower)
+  });
+  ```
+
+  Key options: `url` (required), `formats` (array of `"markdown"` | `"html"` | `"rawHtml"` | `"screenshot"` | `"links"`), `onlyMainContent`, `waitFor` (ms), `maxAge` (ms; omit to allow up to 2-day cache).
+</Accordion>
+
+<Accordion title="emailSearch — find and verify professional emails">
+  ```typescript
+  // Find a person's email:
+  const found = await search.emailSearch.findEmail({
+    domain: "example.com",
+    firstName: "Ada",
+    lastName: "Lovelace",
+  });
+  found.email;  // string | null
+  found.score;  // confidence 0–100
+
+  // Verify an address is deliverable:
+  const check = await search.emailSearch.verifyEmail({ email: "ada@example.com" });
+  check.status;
+
+  // Discover emails at a company domain:
+  const hits = await search.emailSearch.domainSearch({
+    domain: "example.com",
+    limit: 5,
+    seniority: ["executive"],
+    department: ["engineering"],
+  });
+  hits.emails; // [{ email, confidence, firstName, … }, …]
+  hits.pattern; // e.g. "{first}.{last}"
+  ```
+</Accordion>
+
+---
+
+## agents
+
+Run a deployed agent by its slug and await its result, or dispatch one from inside an agent step and pause until it finishes.
+
+```typescript
+import { agents } from "@sapiom/tools";
+
+// Standalone — blocks until the child run reaches a terminal state.
+const result = await agents.run({
+  definition: "enrich-lead",
+  input: { id: leadId },
+});
+if (result.status === "completed") {
+  console.log(result.output);
+}
+```
+
+From inside an agent step, use `launch` and `pauseUntilSignal` to avoid holding a socket:
+
+```typescript
+import { agents } from "@sapiom/tools";
+import { pauseUntilSignal, fail } from "@sapiom/agent";
+
+// In a step:
+try {
+  const child = await agents.launch({ definition: "enrich-lead", input });
+  return pauseUntilSignal(child, { resumeStep: "use-result" });
+} catch (error) {
+  if (error instanceof agents.AgentDispatchError) {
+    return fail(`dispatch rejected: ${error.message}`);
+  }
+  throw error;
+}
+```
+
+`agents.run` returns failure as data (check `result.status`); `agents.launch` throws `AgentDispatchError` on a refused dispatch. `AGENTS_RESULT_SIGNAL` is the signal constant to declare on the step's static `pause` property.
+
+---
+
+## schedules
+
+Create cron and one-off schedules that trigger a deployed agent at a specified time or interval.
+
+```typescript
+import { schedules } from "@sapiom/tools";
+
+// Recurring cron: 9am New York time, Monday–Friday.
+await schedules.create({
+  definition: "enrich-lead",
+  kind: "schedule_cron",
+  cron: "0 9 * * 1-5",
+  timezone: "America/New_York",
+  input: { source: "crm" },
+});
+
+// One-off: run once, two hours from now.
+await schedules.create({
+  definition: "send-receipt",
+  kind: "schedule_once",
+  at: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
+  input: { orderId },
+});
+
+// Manage schedules:
+const all = await schedules.list("enrich-lead");
+const one = await schedules.get(all[0].id); // includes nextFireAt + recent fires
+await schedules.cancel(one.id);
+```
+
+<Tip>
+  `get(id)` returns the next scheduled fire time (`nextFireAt`) and a recent fire history — each with the `executionId` of the run it started — so you can confirm a schedule is firing or debug one that isn't.
+</Tip>
+
+---
+
+## events
+
+Emit a tenant event that starts every agent whose `event` trigger matches its type.
+
+```typescript
+import { events } from "@sapiom/tools";
+
+const receipt = await events.emit({
+  type: "lead.created",
+  payload: { id: leadId, source: "web" },
+  id: `lead-${leadId}`, // dedup key: a second emit with the same id starts nothing
+});
+
+receipt.outcome;   // "matched" | "unmatched"
+receipt.duplicate; // true if this id was already emitted
+receipt.fireIds;   // execution ids of the runs this emit started
+```
+
+`"unmatched"` (no trigger listens for this type) is a normal outcome, not an error.
+
+---
+
+## database
+
+Permanent Postgres databases with direct connection credentials. Databases persist until you delete them — there is no expiry.
+
+```typescript
+import { database } from "@sapiom/tools";
+
+// Provision a database.
+const db = await database.create({
+  handle: "analytics", // optional stable key for later lookups
+});
+
+// Connect with any Postgres client.
+db.connection?.connectionString; // ready-to-use Postgres URI
+db.connection?.host;
+db.connection?.port;
+db.connection?.username;
+db.connection?.password;
+db.connection?.databaseName;
+
+// Retrieve by id or handle, list all, or delete.
+const again = await database.get("analytics");
+const all = await database.list();
+await database.delete("analytics"); // frees the plan slot
+```
+
+<Warning>
+  `database` is a provisioning surface, not a query layer. It hands you connection credentials; run SQL with a standard Postgres client (`pg`, `postgres`, an ORM) using `connection.connectionString`. Guard `db.connection` — it can be `null` while a database is still provisioning.
+</Warning>
+
+---
+
+## email
+
+Programmatic transactional email. Create real, addressable inboxes, send and receive messages, manage custom sending domains, and register webhooks for inbound events.
+
+```typescript
+import { email } from "@sapiom/tools";
+
+// Create an inbox and send from it.
+const inbox = await email.inboxes.create({ username: "support" });
+await email.messages.send(inbox.inboxId, {
+  to: "customer@example.com",
+  subject: "Welcome aboard",
+  text: "Thanks for signing up!",
+});
+
+// Read incoming messages and reply.
+const { messages } = await email.messages.list(inbox.inboxId);
+const full = await email.messages.get(inbox.inboxId, messages[0].messageId);
+await email.messages.reply(inbox.inboxId, full.messageId, {
+  text: "Happy to help!",
+});
+```
+
+Operations are grouped by resource:
+
+| Resource | Operations |
+|---|---|
+| `email.inboxes` | `create`, `list`, `get`, `delete` |
+| `email.messages` | `send`, `list`, `get`, `reply`, `replyAll`, `forward` |
+| `email.domains` | `create`, `verify`, `get`, `list`, `delete` |
+| `email.threads` | `list`, `get` |
+| `email.webhooks` | `create`, `list`, `get`, `delete` |
+| `email.metrics` | `rates` |
+
+<Note>
+  `inboxId` is the email address (contains `@`). Pass it as-is — the client handles URL encoding. `messages.list` returns metadata only — no body. Call `messages.get` for the full message content.
+</Note>
+
+---
+
+## domains
+
+Register domain names and manage their DNS records.
+
+```typescript
+import { domains } from "@sapiom/tools";
+
+// 1. Check availability and pricing (free).
+const results = await domains.check({
+  domainNames: ["my-app.dev", "my-app.io"],
+});
+const pick = results.find((r) => r.available);
+
+// 2. Register it for one year (charges apply).
+if (pick) {
+  await domains.register({ domainName: pick.domainName });
+
+  // 3. Add a DNS A record pointing to your server.
+  await domains.dns.create({
+    domainName: pick.domainName,
+    type: "A",
+    host: "",            // "" = root (@); or "www", "api", …
+    value: "203.0.113.10",
+  });
+}
+```
+
+Top-level operations: `check`, `register`, `renew`, `list`, `get`, `transferOut`.
+DNS operations: `dns.create`, `dns.list`, `dns.get`, `dns.update`, `dns.delete`.
+
+<Warning>
+  `register` and `renew` charge on success and are not reversible. Check availability and pricing with `check` first.
+</Warning>
+
+---
+
+## memory
+
+Tenant-scoped, namespace-isolated long-term memory with semantic, keyword, and hybrid recall.
+
+```typescript
+import { memory } from "@sapiom/tools";
+
+// Append a memory to a namespace.
+const { id } = await memory.append({
+  content: "User prefers dark mode.",
+  namespace: "user-42",
+  metadata: { source: "preference-survey", user_theme: "dark" },
+});
+
+// Recall by semantic query.
+const { results } = await memory.recall({
+  query: "UI theme preferences",
+  namespace: "user-42",
+  topK: 5,
+  strategy: "semantic", // or "keyword" or "hybrid"
+});
+
+// Delete specific memories or a whole namespace.
+await memory.forget({ ids: [id], namespace: "user-42" });
+await memory.drop("user-42");
+```
+
+<Note>
+  Memory is durable knowledge, not chat history. `recall` ranks by relevance — not recency. Keep last-N turn context in your own store. `append` is append-log only and never mutates existing memories.
+</Note>
+
+---
+
+## connectors
+
+Third-party integrations — Google, GitHub, Slack, and MCP-backed connectors (Linear, Notion, custom servers) — grouped under the `connectors` namespace. The gateway resolves tenant credentials server-side; OAuth tokens and bot tokens never reach your code.
+
+<Tabs>
+  <Tab title="Google">
+    ```typescript
+    import { connectors } from "@sapiom/tools";
+
+    // Drive and Gmail run server-side — the Google token never reaches your run.
+    await connectors.google.drive.shareFile({
+      fileId: "1AbC…",
+      role: "reader",
+      type: "anyone",
+    });
+
+    await connectors.google.gmail.sendEmail({
+      to: "person@example.com",
+      subject: "Hello",
+      text: "Sent by my agent, as the tenant.",
+    });
+
+    // Or drive the vendor SDK directly via a proxied auth client:
+    import { drive } from "@googleapis/drive";
+    const files = await drive({
+      version: "v3",
+      auth: await connectors.google.authClient(),
+    }).files.list({ pageSize: 10 });
+    ```
+
+    Operations: `drive.shareFile`, `drive.uploadFile`, `gmail.sendEmail`, `authClient()`, `fetch(url)`.
+  </Tab>
+  <Tab title="Slack">
+    ```typescript
+    import { connectors } from "@sapiom/tools";
+
+    const { ts } = await connectors.slack.postMessage({
+      channel: "C0123456789",
+      text: "Looking into it.",
+    });
+    await connectors.slack.addReaction({
+      channel: "C0123456789",
+      timestamp: ts!,
+      name: "eyes",
+    });
+    ```
+
+    | Method | Slack API | Key args |
+    |---|---|---|
+    | `postMessage` | `chat.postMessage` | `channel`, `text?`, `blocks?`, `threadTs?` |
+    | `update` | `chat.update` | `channel`, `ts`, `text?`, `blocks?` |
+    | `postEphemeral` | `chat.postEphemeral` | `channel`, `user`, `text?`, `blocks?` |
+    | `addReaction` | `reactions.add` | `channel`, `timestamp`, `name` |
+    | `removeReaction` | `reactions.remove` | `channel`, `timestamp`, `name` |
+    | `replies` | `conversations.replies` | `channel`, `ts`, `cursor?`, `limit?` |
+    | `userInfo` | `users.info` | `user` |
+  </Tab>
+  <Tab title="MCP connectors">
+    ```typescript
+    import { connectors } from "@sapiom/tools";
+
+    // Built-in connectors:
+    const tools = await connectors.linear.listTools();
+    const result = await connectors.linear.callTool("list_issues", { limit: 5 });
+    if (result.isError) throw new Error(result.content.map((c) => c.text).join("\n"));
+
+    // Custom or renamed connector — use its slug:
+    const custom = connectors.mcp("my-custom-connector");
+    await custom.callTool("do_something", { param: "value" });
+    ```
+
+    `connectors.notion` works identically to `connectors.linear`. For any other MCP connector — renamed, second instance, or custom server — use `connectors.mcp("<slug>")`. `listTools()` returns the connector's available tools; `callTool(name, args?)` returns a `CallToolResult` with `content` and `isError`.
+  </Tab>
+  <Tab title="GitHub">
+    ```typescript
+    import { connectors } from "@sapiom/tools";
+
+    const repos = await connectors.github.listRepos({ type: "all" });
+    repos.forEach((r) => console.log(r.fullName, r.defaultBranch));
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## llm
+
+Routed LLM calls through the Sapiom gateway. `llm.run` is synchronous (one call, returned inline); `llm.submit` is deferred (returns a handle; the gateway holds the job and issues a redemption link when a model slot opens); `llm.createSession` reserves capacity for repeated calls.
+
+```typescript
+import { llm } from "@sapiom/tools";
+
+// Synchronous one-shot call.
+const reply = await llm.run({
+  request: {
+    messages: [{ role: "user", content: "Explain zero-knowledge proofs briefly." }],
+    max_tokens: 1024,
+  },
+  model: "large", // "small" | "medium" | "large" | "smart"
+});
+
+// Deferred — submit now, redeem when the gateway grants the slot.
+const handle = await llm.submit({
+  request: { messages: [...], max_tokens: 4096 },
+  model: "large",
+  deadlineMinutes: 30,
+});
+// In an agent step: return pauseUntilSignal(handle, { resumeStep: "use-answer" });
+// Standalone: const result = await handle.wait();
+
+// Sessions — reserve capacity for repeated calls.
+const session = await llm.createSession({
+  label: "large",
+  deadlineMinutes: 60,
+  budget: { maxTokens: 2_000_000, ttlMinutes: 120 },
+});
+const ready = await session.wait(); // or pauseUntilSignal(session, …)
+const answer = await llm.callSession(session, {
+  max_tokens: 4096,
+  messages: [{ role: "user", content: "…" }],
+});
+await llm.releaseSession(session);
+```
+
+<Note>
+  `max_tokens` covers thinking tokens as well as output. Routing labels (`"small"`, `"medium"`, `"large"`, `"smart"`) — never raw provider model IDs — are the supported input for `model`. Omit `model` to use the platform default.
+</Note>
+
+---
+
+## decisions
+
+System One decisions: `evaluate` returns calibrated probabilities over a fixed answer set. Use `decisions.evaluate` when the answer is one of a set you can name up front — a yes/no gate, a pick-one label, a rubric score — instead of `llm.run`, which generates freeform text.
+
+```typescript
+import { decisions } from "@sapiom/tools";
+
+const res = await decisions.evaluate({
+  state: { message: ticket.body },
+  questions: {
+    urgent: {
+      type: "noul",
+      instructions: "Is this urgent?",
+    },
+    team: {
+      type: "choice",
+      instructions: "Which team should handle `message`?",
+      criteria: {
+        shipping: "Delivery issues",
+        billing: "Charges and refunds",
+        other: null,
+      },
+    },
+  },
+});
+
+// The answers map is typed by the questions you passed.
+if (res.answers.urgent.noul > 0.8) {
+  escalate(res.answers.team.choice);
+}
+```
+
+### Question types
+
+| Type | Answer shape | Use case |
+|---|---|---|
+| `"noul"` | `{ noul: number }` (0–1 probability of "yes") | Boolean gates, spam detection, urgency checks |
+| `"choice"` | `{ choice: string, probabilities: Record<string, number>, confidence: number }` | Classification, routing, labelling |
+| `"score"` | `{ score: number, probabilities: Record<string, number>, confidence: number }` | Rubric scoring, quality grading |
+
+Ask every independent question over the same `state` in one call — they are evaluated in parallel and cannot see each other's answers. The result also carries token `usage` and optional `cost` quote metadata (`estimateUsd`, `currency`, `isEstimate`).
+
+<Warning>
+  System One decisions are not a security boundary and are weak at arithmetic and date math. Keep those in code. `decisions.evaluate` judges; it does not compute.
+</Warning>
